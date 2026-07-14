@@ -3,7 +3,7 @@
 package main
 
 // The WH_KEYBOARD_LL hook and its dedicated OS thread. The callback performs
-// only fixed-cost work: state-machine updates, the optional two-event menu
+// only fixed-cost work: state-machine updates, the optional two-stage menu
 // suppressor, and a PostThreadMessage to this thread's own queue. Everything
 // else — including all logging — happens in the hook thread's message loop
 // after the callback has returned (NFR-1/2), and the actual IME work happens
@@ -29,9 +29,11 @@ type hookThread struct {
 
 	// Diagnostics counters, incremented in the callback (where logging is
 	// forbidden) and drained to OutputDebugString by the message loop.
-	suppressShort atomic.Uint32 // menu suppressor inserted fewer than 2 events
-	postFailed    atomic.Uint32 // PostThreadMessage from the callback failed
-	maxLatency    atomic.Uint64 // QPC ticks; only when measureHookLatency
+	suppressDownShort atomic.Uint32 // Alt-down suppressor inserted fewer than 2 events
+	suppressUpShort   atomic.Uint32 // Alt-up suppressor inserted fewer than 2 events
+	suppressCleanup   atomic.Uint32 // best-effort key-up cleanup was not inserted
+	postFailed        atomic.Uint32 // PostThreadMessage from the callback failed
+	maxLatency        atomic.Uint64 // QPC ticks; only when measureHookLatency
 }
 
 // hook is the process-wide singleton the raw callback needs to reach.
@@ -85,12 +87,17 @@ func (h *hookThread) handleKey(wParam uintptr, k *kbdllHookStruct) {
 	vk := normalizeAltVK(k.vkCode, k.flags&llkhfExtended != 0)
 	act := h.machine.feed(keyEvent{vk: vk, down: down, injected: injected, time: k.time})
 	if act.beginTap && suppressAltMenuFocus {
-		// Original alt-ime-ahk compatibility: inject the tagged unassigned
-		// VK 0x07 so a lone Alt press does not focus the menu bar. Failure
-		// only loses the suppression; the physical Alt still passes through.
-		if n, _ := sendKeyPair(vkMenuSuppress); n != 2 {
-			h.suppressShort.Add(1)
-		}
+		// Preserve the original alt-ime-ahk mask on Alt-down for Win32-style
+		// menus. It is deliberately paired with the assigned-key suppressor
+		// below because unassigned VK 0x07 may not reach modern app layers.
+		h.sendSuppressor(vkMenuSuppressLegacy, &h.suppressDownShort)
+	}
+	if act.endTap && suppressAltMenuFocus {
+		// The callback runs before the physical Alt-up is posted. Insert an
+		// assigned F24 pair now so Electron/Chromium and DOM keyboard handlers
+		// observe a chord rather than a lone Alt release. Canceled chords have
+		// their real second key and never take this path.
+		h.sendSuppressor(vkMenuSuppressDOM, &h.suppressUpShort)
 	}
 	if act.dispatch {
 		// Stage one of the two-stage dispatch: capture the tap-time
@@ -101,6 +108,19 @@ func (h *hookThread) handleKey(wParam uintptr, k *kbdllHookStruct) {
 			if !postThreadMessage(h.tid, msgHookDispatchSwitch, packSwitchWParam(act.imeOpen, act.triggerVK), target) {
 				h.postFailed.Add(1)
 			}
+		}
+	}
+}
+
+// sendSuppressor is callback-safe and fixed-cost. A short pair insertion can
+// theoretically leave the down half in the input stream, so always attempt a
+// standalone key-up cleanup before returning. The caller still passes the
+// physical Alt event regardless of every SendInput result.
+func (h *hookThread) sendSuppressor(vk uint16, short *atomic.Uint32) {
+	if n, _ := sendKeyPair(vk); n != 2 {
+		short.Add(1)
+		if cleanup, _ := sendKeyUp(vk); cleanup != 1 {
+			h.suppressCleanup.Add(1)
 		}
 	}
 }
@@ -174,8 +194,14 @@ func (h *hookThread) unhook() {
 }
 
 func (h *hookThread) drainDiagnostics() {
-	if n := h.suppressShort.Swap(0); n != 0 {
-		debugf("menu suppressor SendInput inserted <2 events (%d times)", n)
+	if n := h.suppressDownShort.Swap(0); n != 0 {
+		debugf("Alt-down menu suppressor SendInput inserted <2 events (%d times)", n)
+	}
+	if n := h.suppressUpShort.Swap(0); n != 0 {
+		debugf("Alt-up DOM suppressor SendInput inserted <2 events (%d times)", n)
+	}
+	if n := h.suppressCleanup.Swap(0); n != 0 {
+		debugf("menu suppressor key-up cleanup SendInput failed (%d times)", n)
 	}
 	if n := h.postFailed.Swap(0); n != 0 {
 		debugf("PostThreadMessage(dispatch) failed inside callback (%d times)", n)

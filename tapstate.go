@@ -28,8 +28,12 @@ type keyEvent struct {
 // tapAction is what the hook layer must do after feeding one event.
 type tapAction struct {
 	// beginTap: a physical Alt press just started a clean tap candidate.
-	// This is the only point where the menu-focus suppressor may be sent.
+	// This is where the legacy menu-focus suppressor may be sent.
 	beginTap bool
+	// endTap: the tracked physical Alt was released without another key,
+	// including after the IME-switch hold limit. This is where the
+	// Electron/DOM-visible suppressor may be sent before the Alt-up passes.
+	endTap bool
 	// dispatch: a tap completed; request an IME switch.
 	dispatch  bool
 	imeOpen   bool   // dispatch: true = IME ON (right Alt), false = OFF (left Alt)
@@ -178,6 +182,7 @@ func (m *tapMachine) feedUp(ev keyEvent, act *tapAction) {
 			m.phase = tapCanceled
 			return
 		}
+		act.endTap = true
 		if ev.time-m.downTime <= m.maxHoldMs { // uint32 wraparound-safe
 			act.dispatch = true
 			act.imeOpen = ev.vk == vkRMenu

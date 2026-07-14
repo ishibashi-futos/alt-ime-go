@@ -17,6 +17,16 @@ func require64(t *testing.T) {
 	}
 }
 
+func TestMenuSuppressKeys(t *testing.T) {
+	if vkMenuSuppressLegacy != 0x07 {
+		t.Fatalf("vkMenuSuppressLegacy = %#x, want 0x07", vkMenuSuppressLegacy)
+	}
+	// This second key must be assigned so Electron/Chromium can observe it.
+	if vkMenuSuppressDOM != 0x87 {
+		t.Fatalf("vkMenuSuppressDOM = %#x, want VK_F24 (0x87)", vkMenuSuppressDOM)
+	}
+}
+
 func TestKbdllHookStructLayout(t *testing.T) {
 	require64(t)
 	var v kbdllHookStruct

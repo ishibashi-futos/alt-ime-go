@@ -65,7 +65,7 @@ GOOS=windows GOARCH=amd64 go build -ldflags "-H windowsgui -s -w" -o alt-ime-go.
 | 定数 | 既定値 | 意味 |
 |---|---|---|
 | `tapMaxHoldMs` | 500 | 空打ちと判定する最長保持時間 (ms) |
-| `suppressAltMenuFocus` | true | 単独 Alt のメニューフォーカス抑制（VK `0x07` 注入） |
+| `suppressAltMenuFocus` | true | 単独 Alt のメニュー抑制（Alt-down で VK `0x07`、clean Alt-up で `VK_F24` を注入） |
 | `imeControl` | `imeControlVK` | IME 制御方式。`imeControlIMM32` で IMM32 経路に切替（自動フォールバックなし） |
 | `imm32TimeoutMs` | 100 | IMM32 経路の `SendMessageTimeoutW` 期限 (ms) |
 | `osdBase` ほか | — | OSD の寸法（96 DPI 基準）・色・表示/フェード時間 |
@@ -94,8 +94,11 @@ GOOS=windows GOARCH=amd64 go build -ldflags "-H windowsgui -s -w" -o alt-ime-go.
   `OutputDebugStringW`（[DebugView](https://learn.microsoft.com/sysinternals/downloads/debugview)
   等で閲覧）に記録される。
 - **セキュアデスクトップ**（UAC プロンプト、サインイン画面）は対象外。
-- **メニュー抑制の VK `0x07`** は未割当 VK を使う本家由来の互換策で、Win32 の正式保証は
-  ない。JetBrains IDE・RDP・ゲーム等で干渉する場合は `suppressAltMenuFocus = false` で
+- **メニュー抑制**は Alt-down で本家由来の未割当 VK `0x07`、他キーを伴わない Alt-up で
+  Electron/Chromium や Web アプリにも届く `VK_F24` を注入する。このため対象アプリへ
+  `Alt+F24` の keydown/keyup が届き、DOM のキー監視からも見える。アプリ固有の割り当て、
+  JetBrains IDE・RDP・ゲーム等で
+  干渉する場合は `suppressAltMenuFocus = false` で
   無効化できる。無効化すると空打ち検出はそのまま動くが、単独 Alt で Windows 既定の
   メニューバーフォーカス移動が復活する。
 - **OSD は送出結果**であり、IME が要求を受理したかは表示しない（`VK_IME_ON/OFF` を
@@ -111,7 +114,8 @@ Windows 10/11 x64 実機で確認する。
 2. `alt-ime.exe` を起動し、メモ帳等で左 Alt 空打ち → 半角英数 + `A` OSD、
    右 Alt 空打ち → ひらがな + `あ` OSD。
 3. Alt+Tab / Alt+F4 / Alt+Space / Alt+英字が通常動作し、誤切替しないこと。
-4. 単独 Alt でメニューバーにフォーカスが移らないこと。
+4. 単独 Alt でメニューバーにフォーカスが移らず、VS Code のカスタムメニューと
+   Outlook on the Web の KeyTips が開かないこと。
 5. Shift/Ctrl/Win 併用・両 Alt・長押し（>500ms）・Alt repeat で切り替わらないこと。
 6. トレイ: 右クリック/Enter でメニュー、有効/無効切替、終了。
    `taskkill /f /im explorer.exe && start explorer` 後のアイコン復旧。

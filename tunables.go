@@ -19,10 +19,10 @@ const (
 	// is intentionally not supported.
 	tapMaxHoldMs uint32 = 500
 
-	// suppressAltMenuFocus injects the tagged unassigned VK 0x07 on a clean
-	// physical Alt press so a lone Alt does not move focus to the menu bar.
-	// Compatibility measure inherited from alt-ime-ahk, not a documented
-	// Win32 contract; set to false for environments where it interferes.
+	// suppressAltMenuFocus injects tagged VK 0x07 on a clean physical Alt
+	// down, then VK_F24 on its clean Alt-up. The first masks Win32 menus; the
+	// second is visible to Electron/Chromium and web keyboard handlers so
+	// they observe an Alt+F24 chord. Set false if Alt+F24 conflicts.
 	suppressAltMenuFocus = true
 
 	// imeControl selects the delivery path (FR-14).

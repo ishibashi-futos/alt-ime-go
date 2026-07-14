@@ -39,11 +39,15 @@
 ## フェーズ 2: Alt メニューフォーカス抑制
 
 - [x] `suppressAltMenuFocus` を既定 true で追加
-- [x] 他キーなしで tracking を開始する物理 Alt down 時だけ、タグ付き VK `0x07` down/up を固定 2 入力で送出
+- [x] 他キーなしで tracking を開始する物理 Alt down 時に、タグ付き未割当 VK `0x07` down/up を固定 2 入力で送出
+- [x] 他キーを伴わない物理 Alt up 時に、タグ付き `VK_F24` down/up を固定 2 入力で送出
+- [x] 抑制キーが1件だけ挿入された場合は、key-up を追加送出して stuck key を予防
 - [x] 送出数を検査し、失敗しても物理 Alt はブロックしない
 - [ ] 単独 Alt でメニューフォーカスが移らないことを確認（実機）
+- [ ] VS Code でカスタムメニューへフォーカスが移らないことを確認（実機）
+- [ ] Outlook on the Web で KeyTips が表示されないことを確認（実機）
 - [ ] Alt+Tab / Alt+F4 / Alt+Space / Alt+英字への干渉がないことを確認（実機）
-- [ ] JetBrains、RDP、ゲーム、Razer Synapse 等との互換性を記録（実機）
+- [ ] Edge/Chrome の DOM、JetBrains、RDP、ゲーム、Razer Synapse 等で `Alt+F24` の副作用がないことを記録（実機）
 - [x] 問題環境で抑制を無効化した場合の挙動を README に記載
 
 ## フェーズ 3: IME 制御と対象整合性
@@ -121,6 +125,7 @@
 - [ ] Word・Excel
 - [ ] Edge・Chrome
 - [ ] VS Code
+- [ ] Outlook on the Web
 - [ ] Windows Terminal・PowerShell・コマンドプロンプト
 - [ ] UWP / Windows App SDK 系アプリ
 - [ ] JetBrains IDE

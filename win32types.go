@@ -13,20 +13,21 @@ const ownInputTag uintptr = 0x414C54494D4531
 
 // Virtual-key codes.
 const (
-	vkLButton      = 0x01
-	vkRButton      = 0x02
-	vkCancel       = 0x03
-	vkMButton      = 0x04
-	vkXButton1     = 0x05
-	vkXButton2     = 0x06
-	vkMenuSuppress = 0x07 // unassigned VK injected to suppress Alt menu focus
-	vkShift        = 0x10
-	vkControl      = 0x11
-	vkMenu         = 0x12
-	vkImeOn        = 0x16
-	vkImeOff       = 0x1A
-	vkLMenu        = 0xA4
-	vkRMenu        = 0xA5
+	vkLButton            = 0x01
+	vkRButton            = 0x02
+	vkCancel             = 0x03
+	vkMButton            = 0x04
+	vkXButton1           = 0x05
+	vkXButton2           = 0x06
+	vkMenuSuppressLegacy = 0x07 // unassigned VK for Win32-style menu masking
+	vkMenuSuppressDOM    = 0x87 // VK_F24: visible to Electron/Chromium and DOM
+	vkShift              = 0x10
+	vkControl            = 0x11
+	vkMenu               = 0x12
+	vkImeOn              = 0x16
+	vkImeOff             = 0x1A
+	vkLMenu              = 0xA4
+	vkRMenu              = 0xA5
 )
 
 // Low-level keyboard hook.

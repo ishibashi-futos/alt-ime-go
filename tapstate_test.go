@@ -30,8 +30,10 @@ func run(t *testing.T, m *tapMachine, steps []step) {
 func begin() tapAction { return tapAction{beginTap: true} }
 func none() tapAction  { return tapAction{} }
 func fire(vk uint32) tapAction {
-	return tapAction{dispatch: true, imeOpen: vk == vkRMenu, triggerVK: vk}
+	return tapAction{endTap: true, dispatch: true, imeOpen: vk == vkRMenu, triggerVK: vk}
 }
+
+func endTap() tapAction { return tapAction{endTap: true} }
 
 func TestNormalizeAltVK(t *testing.T) {
 	tests := []struct {
@@ -104,11 +106,21 @@ func TestHoldBoundary(t *testing.T) {
 		{down(vkLMenu, 1000), begin()},
 		{up(vkLMenu, 1500), fire(vkLMenu)},
 		{down(vkLMenu, 2000), begin()},
-		{up(vkLMenu, 2501), none()},
+		{up(vkLMenu, 2501), endTap()},
 	})
 	if m.phase != tapIdle {
 		t.Fatalf("phase = %v, want idle after expired tap", m.phase)
 	}
+}
+
+func TestCanceledChordDoesNotRequestAltUpSuppressor(t *testing.T) {
+	m := newTapMachine(500)
+	run(t, m, []step{
+		{down(vkLMenu, 0), begin()},
+		{down(0x09 /*Tab*/, 20), none()},
+		{up(0x09, 40), none()},
+		{up(vkLMenu, 60), none()},
+	})
 }
 
 func TestTimeWraparound(t *testing.T) {

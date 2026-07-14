@@ -469,6 +469,18 @@ func sendKeyPair(vk uint16) (uint32, syscall.Errno) {
 	return uint32(n), errno
 }
 
+// sendKeyUp inserts a tagged release used as best-effort cleanup after a
+// short key-pair insertion. An unmatched key-up is harmless, while omitting
+// it could leave an assigned suppressor key logically down in the target.
+func sendKeyUp(vk uint16) (uint32, syscall.Errno) {
+	input := inputStruct{
+		inputType: inputKeyboard,
+		ki:        keybdInput{wVk: vk, dwFlags: keyEventFKeyUp, dwExtraInfo: ownInputTag},
+	}
+	n, errno := procSendInput.call(1, uintptr(unsafe.Pointer(&input)), unsafe.Sizeof(input))
+	return uint32(n), errno
+}
+
 func setTimer(hwnd uintptr, id uintptr, ms uint32) bool {
 	r, _ := procSetTimer.call(hwnd, id, uintptr(ms), 0)
 	return r != 0

@@ -64,7 +64,7 @@ GOOS=windows GOARCH=amd64 go build -ldflags "-H windowsgui -s -w" -o alt-ime.exe
 - **有効状態:** フック専用スレッドが所有し、無効中は状態追跡とメニュー抑制を行わない。
 - **空打ち状態機械:** `idle / tracking / canceled`。Alt down 前から保持中のキーもキャンセル条件に含める。
 - **自己注入:** `LLKHF_INJECTED` だけで判定せず、`dwExtraInfo == ownInputTag` も一致した入力だけを除外する。
-- **本家互換:** 既定では物理 Alt down 時にタグ付き未割当 VK `0x07` を送り、メニューフォーカスを抑制する。
+- **メニュー抑制:** 既定では空打ち候補の Alt down 時にタグ付き未割当 VK `0x07`、他キーを伴わない Alt up 時にタグ付き `VK_F24` を送る。
 - **二段配送:** Alt-up callback 復帰後に UI へ切替要求を送り、IME 送出直前に Alt 解放を確認する。
 - **対象競合防止:** 前面 HWND が変わった要求、または Alt が未解放の要求は破棄する。
 - **IME:** 主経路は `VK_IME_ON/OFF` の絶対指定。`SendInput` の送出数を必ず検査する。
@@ -80,7 +80,7 @@ GOOS=windows GOARCH=amd64 go build -ldflags "-H windowsgui -s -w" -o alt-ime.exe
 - `LowLevelHooksTimeout` 超過時、Windows 7+ ではフックが通知なしに削除され得る。UI 処理をフックスレッドへ持ち込まない。
 - `SendInput` とウィンドウメッセージは UIPI の制約を受ける。送出成功と実 IME 状態を混同しない。
 - 同期的な外部 HWND 呼出しを無期限に待たない。
-- Alt メニュー抑制の VK `0x07` は正式保証ではない。JetBrains、RDP、ゲーム等の互換試験を必須とする。
+- Alt メニュー抑制の VK `0x07` は正式 API ではなく、`VK_F24` はアプリにも届く。Electron、ブラウザ、JetBrains、RDP、ゲーム等の互換試験を必須とする。
 - OSD の古いタイマが新しい表示を消さないよう、世代または期限を検証する。
 - Explorer 再起動後にトレイを再登録する。
 - 無効化、セッション/電源復帰時にフック状態機械をリセットする。
