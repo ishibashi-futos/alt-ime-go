@@ -19,10 +19,15 @@ const (
 type trayIcon struct {
 	owner uintptr // controller window receiving msgTray
 	menu  uintptr
+	icon  uintptr // shared resource loaded from the executable; do not destroy
 	added bool
 }
 
-func newTrayIcon(owner uintptr) (*trayIcon, error) {
+func newTrayIcon(owner, hinst uintptr) (*trayIcon, error) {
+	icon, errno := loadIcon(hinst, appIconResourceID)
+	if icon == 0 {
+		return nil, winError("LoadIconW(application)", errno)
+	}
 	menu := createPopupMenu()
 	if menu == 0 {
 		return nil, winError("CreatePopupMenu", 0)
@@ -32,7 +37,7 @@ func newTrayIcon(owner uintptr) (*trayIcon, error) {
 		destroyMenu(menu)
 		return nil, winError("AppendMenuW", 0)
 	}
-	t := &trayIcon{owner: owner, menu: menu}
+	t := &trayIcon{owner: owner, menu: menu, icon: icon}
 	if err := t.register(); err != nil {
 		destroyMenu(menu)
 		return nil, err
@@ -52,8 +57,7 @@ func (t *trayIcon) fullNID() notifyIconDataW {
 	nid := t.baseNID()
 	nid.uFlags = nifMessage | nifIcon | nifTip | nifShowTip
 	nid.uCallbackMessage = msgTray
-	// Shared system icon: must never be destroyed by us.
-	nid.hIcon = loadIcon(0, idiApplication)
+	nid.hIcon = t.icon
 	copyUTF16(nid.szTip[:], appTitle)
 	return nid
 }

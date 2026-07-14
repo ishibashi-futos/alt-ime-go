@@ -3,7 +3,8 @@
 > 凡例: [ ] 未着手 / [~] 進行中 / [x] 完了
 >
 > 現状: **実装済み・静的検査済み。** `gofmt` / `go vet`（windows/amd64）/ ユニットテスト
-> （ホストネイティブ実行）/ クロスビルド / PE 検証（GUI サブシステム・DPI manifest）を
+> （ホストネイティブ実行）/ クロスビルド / PE 検証
+> （GUI サブシステム・DPI manifest・multi-size icon）を
 > 通過。**Windows GUI 実挙動・IME 実効性・フック・トレイ・DPI は実機未検証**（下段の
 > リリース判定リストが未消化）。
 
@@ -13,8 +14,9 @@
 
 - [x] `go.mod`、`main.go`、`win32.go`、`README.md` を作成
 - [x] Win32 型・定数・構造体・API 戻り値規約を `win32.go` / `win32types.go` に集約
-- [x] `PerMonitorV2` manifest を exe に埋め込むビルド方法を確定
-      （`alt-ime.manifest` + `mkrsrc.go` 生成の `rsrc_windows_amd64.syso`。PE 解析で埋め込み確認済み）
+- [x] `PerMonitorV2` manifest と multi-size アイコンを exe に埋め込むビルド方法を確定
+      （`alt-ime.manifest` + `assets/alt-ime-icon.ico` + `mkrsrc.go` 生成の
+      `rsrc_windows_amd64.syso`。PE 解析で埋め込み確認済み）
 - [x] 名前付き mutex によるユーザーセッション単位の多重起動防止
 - [x] UI スレッドとフック専用 OS スレッドの起動・ready・停止 handshake
 - [x] 部分初期化失敗時の逆順 cleanup
@@ -84,6 +86,7 @@
 - [x] フック停止確認後にトレイ、タイマ、GDI、ウィンドウ、mutex を解放
       （フック無応答時は 2000ms のフォールバックタイマで続行）
 - [x] 初期トレイ登録失敗時は MessageBox 後に安全終了
+- [x] 墨色×白の独自 multi-size アイコンを exe に埋め込み、トレイでも共用
 
 ## フェーズ 6: 静的検査・ビルド
 
@@ -94,8 +97,8 @@
 - [~] `GOOS=windows GOARCH=amd64 go test ./...` が成功
       （クロスコンパイル成功・同一テストのホストネイティブ実行は全緑。
       テストバイナリの実行は Windows 実機でのみ可能なため、実機での実行は未実施）
-- [x] `GOOS=windows GOARCH=amd64 go build -ldflags "-H windowsgui -s -w" -o alt-ime.exe .` が成功
-- [x] exe に GUI subsystem と DPI manifest が埋め込まれていることを確認（`debug/pe` 解析）
+- [x] `GOOS=windows GOARCH=amd64 go build -ldflags "-H windowsgui -s -w" -o alt-ime-go.exe .` が成功
+- [x] exe に GUI subsystem、DPI manifest、multi-size icon が埋め込まれていることを確認（`debug/pe` 解析）
 
 ---
 
@@ -140,6 +143,7 @@
 - [ ] 二重起動を拒否
 - [ ] 有効/無効の切替境界で誤発火しない
 - [ ] 終了後にフック・アイコン・プロセスが残らない
+- [ ] exe とトレイに同じ独自アイコンが表示され、主要 DPI で潰れ・にじみがない
 - [ ] スリープ復帰・ロック解除後にフックが生存し、最初の入力で誤発火しない
 
 ### DPI / 表示
@@ -163,7 +167,6 @@
 
 - [ ] 設定ファイル対応
 - [ ] ログオン自動起動
-- [ ] 独自 multi-size .ico の埋め込み
 - [ ] コード署名
 - [ ] UIAccess + 署名 + 安全なインストール形態の設計判断
 - [ ] Ctrl+Shift 方式（割り当て・優先順位・排他の仕様確定後）

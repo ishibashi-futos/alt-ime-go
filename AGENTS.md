@@ -7,7 +7,7 @@ Windows 常駐ツール。切替要求の送出結果を macOS 風 OSD で可視
 
 現在は **実装済み・静的検査済み（Windows 実機検証は未実施）**。
 `gofmt` / `go vet` / ユニットテスト（ホストネイティブ実行）/ windows-amd64 クロスビルド /
-PE 検証（GUI サブシステム・DPI manifest 埋め込み）を通過している。
+PE 検証（GUI サブシステム・DPI manifest・multi-size icon 埋め込み）を通過している。
 本フェーズの対象は Alt 方式。Ctrl+Shift 方式は保留。
 
 ## 技術スタック・制約（厳守）
@@ -22,11 +22,21 @@ PE 検証（GUI サブシステム・DPI manifest 埋め込み）を通過して
 
 ## 予定するビルド / 検査
 
+Codex のサンドボックスでは既定の Go キャッシュ先（`~/Library/Caches/go-build` と
+`~/go/pkg/mod/cache`）へ書き込めない。**Go コマンドを最初に失敗させてから再実行せず、
+同じシェル内で必ず先に以下を設定する。**
+
+```sh
+export GOCACHE=/tmp/alt-ime-go-cache
+export GOMODCACHE=/tmp/alt-ime-go-modcache
+mkdir -p "$GOCACHE" "$GOMODCACHE"
+```
+
 ```sh
 GOOS=windows GOARCH=amd64 go test ./...
 GOOS=windows GOARCH=amd64 go vet ./...
 gofmt -l .
-GOOS=windows GOARCH=amd64 go build -ldflags "-H windowsgui -s -w" -o alt-ime.exe .
+GOOS=windows GOARCH=amd64 go build -ldflags "-H windowsgui -s -w" -o alt-ime-go.exe .
 ```
 
 > GUI 挙動、IME 実効性、フック、トレイ、DPI は Windows 実機でしか合否判定できない。
@@ -47,7 +57,9 @@ GOOS=windows GOARCH=amd64 go build -ldflags "-H windowsgui -s -w" -o alt-ime.exe
 ├─ tunables.go              # 設定定数・OSD 寸法・DPI スケール（OS 非依存）
 ├─ *_test.go                # 状態機械、Tunables、構造体レイアウト（ホストでも実行可）
 ├─ alt-ime.manifest         # PerMonitorV2 DPI manifest
-├─ mkrsrc.go                # manifest を .syso 化する生成器（go:build ignore）
+├─ assets/                  # SVG/PNG 原稿と multi-size ICO
+├─ mkicon.go                # アイコン生成器（標準ライブラリのみ、go:build ignore）
+├─ mkrsrc.go                # manifest と icon を .syso 化する生成器（go:build ignore）
 ├─ rsrc_windows_amd64.syso  # 生成済みリソースオブジェクト（コミット対象）
 ├─ go.mod                   # 外部依存なし
 ├─ README.md

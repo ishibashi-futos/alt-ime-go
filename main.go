@@ -129,7 +129,7 @@ func runApp() error {
 	a.osd = osd
 	undo = append(undo, osd.destroy)
 
-	tray, err := newTrayIcon(ctrl)
+	tray, err := newTrayIcon(ctrl, hinst)
 	if err != nil {
 		return fail(err) // fatal per design §7: MessageBox happens in main
 	}

@@ -492,9 +492,8 @@ func killTimer(hwnd uintptr, id uintptr) {
 
 // ---- icons, cursors, menus ----
 
-func loadIcon(hInstance uintptr, id uintptr) uintptr {
-	r, _ := procLoadIconW.call(hInstance, id)
-	return r
+func loadIcon(hInstance uintptr, id uintptr) (uintptr, syscall.Errno) {
+	return procLoadIconW.call(hInstance, id)
 }
 
 func loadCursor(hInstance uintptr, id uintptr) uintptr {

@@ -3,6 +3,8 @@
 alt-ime-ahk 相当（左右 Alt の空打ちで IME を OFF/ON）を **Go でスクラッチ実装する**
 Windows 常駐ツール。切替要求の送出結果を macOS 風 OSD で可視化し、タスクトレイに常駐する。
 
+配布バイナリ名は `alt-ime-go.exe`。墨色×白の multi-size icon を exe とトレイで共用する。
+
 ## 技術スタック・制約（厳守）
 
 - 言語: **Go**（ローカルは mise で `go@1.26.2` を使用）
@@ -19,7 +21,7 @@ Windows 常駐ツール。切替要求の送出結果を macOS 風 OSD で可視
 GOOS=windows GOARCH=amd64 go test ./...
 GOOS=windows GOARCH=amd64 go vet ./...
 gofmt -l .
-GOOS=windows GOARCH=amd64 go build -ldflags "-H windowsgui -s -w" -o alt-ime.exe .
+GOOS=windows GOARCH=amd64 go build -ldflags "-H windowsgui -s -w" -o alt-ime-go.exe .
 ```
 
 > GUI 挙動、IME 実効性、フック、トレイ、DPI は Windows 実機でしか合否判定できない。
@@ -40,7 +42,9 @@ GOOS=windows GOARCH=amd64 go build -ldflags "-H windowsgui -s -w" -o alt-ime.exe
 ├─ tunables.go              # 設定定数・OSD 寸法・DPI スケール（OS 非依存）
 ├─ *_test.go                # 状態機械、Tunables、構造体レイアウト（ホストでも実行可）
 ├─ alt-ime.manifest         # PerMonitorV2 DPI manifest
-├─ mkrsrc.go                # manifest を .syso 化する生成器（go:build ignore）
+├─ assets/                  # SVG/PNG 原稿と multi-size ICO
+├─ mkicon.go                # アイコン生成器（標準ライブラリのみ、go:build ignore）
+├─ mkrsrc.go                # manifest と icon を .syso 化する生成器（go:build ignore）
 ├─ rsrc_windows_amd64.syso  # 生成済みリソースオブジェクト（コミット対象）
 ├─ go.mod                   # 外部依存なし
 ├─ README.md

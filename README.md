@@ -6,7 +6,8 @@
 切替要求の送出結果を macOS 風の OSD で表示し、タスクトレイに常駐する。
 
 > **検証状態:** コード実装済み・静的検査（gofmt / go vet / ユニットテスト / クロスビルド /
-> PE 検証）済み。**Windows 実機での動作確認は未実施**。実機での合否判定項目は
+> PE 検証（GUI サブシステム・DPI manifest・multi-size icon）済み。
+> **Windows 実機での動作確認は未実施**。実機での合否判定項目は
 > [docs/todo.md](docs/todo.md) の「Windows 実機のリリース判定」を参照。
 
 ## 機能
@@ -45,10 +46,11 @@ GOOS=windows GOARCH=amd64 go test ./...   # テストバイナリの実行は Wi
 GOOS=windows GOARCH=amd64 go build -ldflags "-H windowsgui -s -w" -o alt-ime-go.exe .
 ```
 
-- 生成物は単一の `alt-ime.exe`（GUI サブシステム、コンソールなし）。
-- DPI manifest（Per-Monitor V2）は `alt-ime.manifest` を `rsrc_windows_amd64.syso`
-  経由で埋め込む。manifest を編集したら `go run mkrsrc.go` で syso を再生成する
-  （生成器も標準ライブラリのみ）。
+- 生成物は単一の `alt-ime-go.exe`（GUI サブシステム、コンソールなし）。
+- DPI manifest（Per-Monitor V2）と墨色×白の multi-size アプリアイコンは
+  `rsrc_windows_amd64.syso` 経由で埋め込む。アイコンを変更する場合は
+  `go run mkicon.go`、続けて `go run mkrsrc.go` で syso を再生成する
+  （いずれの生成器も標準ライブラリのみ）。
 
 ### テストについて
 
@@ -111,7 +113,7 @@ GOOS=windows GOARCH=amd64 go build -ldflags "-H windowsgui -s -w" -o alt-ime-go.
 Windows 10/11 x64 実機で確認する。
 
 1. `GOOS=windows GOARCH=amd64 go test ./...`（実機ではそのまま実行可能）。
-2. `alt-ime.exe` を起動し、メモ帳等で左 Alt 空打ち → 半角英数 + `A` OSD、
+2. `alt-ime-go.exe` を起動し、メモ帳等で左 Alt 空打ち → 半角英数 + `A` OSD、
    右 Alt 空打ち → ひらがな + `あ` OSD。
 3. Alt+Tab / Alt+F4 / Alt+Space / Alt+英字が通常動作し、誤切替しないこと。
 4. 単独 Alt でメニューバーにフォーカスが移らず、VS Code のカスタムメニューと

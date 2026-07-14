@@ -114,6 +114,8 @@ const (
 
 	ninSelect    = wmUser + 0
 	ninKeySelect = wmUser + 1
+
+	appIconResourceID = 1
 )
 
 // Window styles and show/positioning flags.
@@ -187,8 +189,7 @@ const (
 
 // Misc.
 const (
-	idiApplication = 32512
-	idcArrow       = 32512
+	idcArrow = 32512
 
 	pmNoRemove = 0
 
