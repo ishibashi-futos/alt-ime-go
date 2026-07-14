@@ -39,6 +39,7 @@ const (
 	wmSysKeyDown = 0x0104
 	wmSysKeyUp   = 0x0105
 
+	llkhfExtended = 0x01
 	llkhfInjected = 0x10
 	llkhfUp       = 0x80
 )

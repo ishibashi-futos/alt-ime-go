@@ -51,6 +51,21 @@ func newTapMachine(maxHoldMs uint32) *tapMachine {
 	return &tapMachine{maxHoldMs: maxHoldMs}
 }
 
+// normalizeAltVK converts a generic VK_MENU event into the left/right code
+// expected by the tap machine. Some keyboard input paths preserve VK_MENU in
+// the event and carry the side only in the extended-key flag: right Alt is an
+// extended key, while left Alt is not. Already-specific and non-Alt VKs pass
+// through unchanged.
+func normalizeAltVK(vk uint32, extended bool) uint32 {
+	if vk != vkMenu {
+		return vk
+	}
+	if extended {
+		return vkRMenu
+	}
+	return vkLMenu
+}
+
 // resync replaces the held-key view and returns the machine to idle. Callers
 // run it outside the hook callback (startup, enable/disable, session unlock,
 // power resume) with the keys the OS currently reports as down, so keys held

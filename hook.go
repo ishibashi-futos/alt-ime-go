@@ -82,7 +82,8 @@ func (h *hookThread) handleKey(wParam uintptr, k *kbdllHookStruct) {
 	if injected && k.dwExtraInfo == ownInputTag {
 		return // self-injected (IME keys, menu suppressor): invisible to the machine
 	}
-	act := h.machine.feed(keyEvent{vk: k.vkCode, down: down, injected: injected, time: k.time})
+	vk := normalizeAltVK(k.vkCode, k.flags&llkhfExtended != 0)
+	act := h.machine.feed(keyEvent{vk: vk, down: down, injected: injected, time: k.time})
 	if act.beginTap && suppressAltMenuFocus {
 		// Original alt-ime-ahk compatibility: inject the tagged unassigned
 		// VK 0x07 so a lone Alt press does not focus the menu bar. Failure
@@ -192,9 +193,10 @@ func (h *hookThread) reportLatency() {
 
 // scanHeldKeys snapshots the keys the OS currently reports as down. Runs
 // only outside the callback. Mouse buttons (0x01..0x06) are excluded because
-// the keyboard hook will never deliver their release, and the generic
-// modifier codes (VK_SHIFT/CONTROL/MENU) are excluded because the LL hook
-// always reports the specific left/right codes.
+// the keyboard hook will never deliver their release. Generic modifier codes
+// (VK_SHIFT/CONTROL/MENU) are excluded: Alt events are normalized to their
+// left/right codes at the hook boundary, and the state snapshot queries those
+// specific codes directly.
 func scanHeldKeys() []uint32 {
 	var down []uint32
 	for vk := uint32(0x08); vk <= 0xFE; vk++ {

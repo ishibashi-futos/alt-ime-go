@@ -33,6 +33,51 @@ func fire(vk uint32) tapAction {
 	return tapAction{dispatch: true, imeOpen: vk == vkRMenu, triggerVK: vk}
 }
 
+func TestNormalizeAltVK(t *testing.T) {
+	tests := []struct {
+		name     string
+		vk       uint32
+		extended bool
+		want     uint32
+	}{
+		{"generic left Alt", vkMenu, false, vkLMenu},
+		{"generic right Alt", vkMenu, true, vkRMenu},
+		{"specific left Alt", vkLMenu, false, vkLMenu},
+		{"specific left Alt extended flag ignored", vkLMenu, true, vkLMenu},
+		{"specific right Alt", vkRMenu, true, vkRMenu},
+		{"specific right Alt without extended flag", vkRMenu, false, vkRMenu},
+		{"non-Alt", 0x41, true, 0x41},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := normalizeAltVK(tt.vk, tt.extended); got != tt.want {
+				t.Fatalf("normalizeAltVK(%#x, %t) = %#x, want %#x", tt.vk, tt.extended, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestGenericAltEventsFireAfterNormalization(t *testing.T) {
+	tests := []struct {
+		name     string
+		extended bool
+		wantVK   uint32
+	}{
+		{"left Alt", false, vkLMenu},
+		{"right Alt", true, vkRMenu},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := newTapMachine(500)
+			vk := normalizeAltVK(vkMenu, tt.extended)
+			run(t, m, []step{
+				{down(vk, 1000), begin()},
+				{up(vk, 1100), fire(tt.wantVK)},
+			})
+		})
+	}
+}
+
 func TestTapLeftAltFiresImeOff(t *testing.T) {
 	m := newTapMachine(500)
 	run(t, m, []step{
