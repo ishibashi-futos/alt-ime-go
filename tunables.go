@@ -55,6 +55,12 @@ const (
 	// enterGuardDefaultEnabled is the Enter guard state at startup; the tray
 	// menu toggles it at runtime (FR-20..23).
 	enterGuardDefaultEnabled = true
+
+	// guardTrace logs every guard replacement decision (send/composing/IME
+	// answer) to OutputDebugString from the UI thread. Kept on while the
+	// CON-9 heuristic is under real-hardware validation; set false once the
+	// feature is signed off.
+	guardTrace = true
 )
 
 // ---- Enter guard targets (FR-20) ----

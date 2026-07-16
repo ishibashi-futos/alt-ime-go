@@ -81,6 +81,7 @@ GOOS=windows GOARCH=amd64 go build -ldflags "-H windowsgui -s -w" -o alt-ime-go.
 | `imm32TimeoutMs` | 100 | IMM32 経路の `SendMessageTimeoutW` 期限 (ms) |
 | `enterGuardTargetExes` | `m365copilot.exe`, `claude.exe` | Enter送信ガードの対象 exe 名（basename、小文字） |
 | `enterGuardDefaultEnabled` | true | 起動時の Enter送信ガード有効状態（トレイで切替可能） |
+| `guardTrace` | true | ガードの置換判定 1 件ごとの内訳を `OutputDebugStringW` へ記録（DebugView 等で観測。検証完了後に false 推奨） |
 | `osdBase` ほか | — | OSD の寸法（96 DPI 基準）・色・表示/フェード時間 |
 
 ## アーキテクチャ概要

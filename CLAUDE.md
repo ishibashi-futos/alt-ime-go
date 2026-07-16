@@ -68,8 +68,11 @@ GOOS=windows GOARCH=amd64 go build -ldflags "-H windowsgui -s -w" -o alt-ime-go.
 - **Enter送信ガード:** 対象アプリ（前面プロセスの exe 名が `enterGuardTargetExes` に一致）でのみ、
   Enter 単独／Ctrl+Enter の down/up 対を callback で消費し、置換の選択と注入は UI スレッドへ
   二段配送（`msgHookDispatchGuard`→`msgGuardEnter`、UI で前面再検証）。Ctrl+Enter、または
-  変換中ヒューリスティック成立かつ `IMC_GETOPENSTATUS` が open なら素の Enter
-  （送信 / 変換確定。Ctrl は一時解放→復元）、それ以外はタグ付き Shift+Enter（改行）。
+  変換中ヒューリスティック成立かつ「`IMC_GETOPENSTATUS` が open または応答なし」なら素の
+  Enter（送信 / 変換確定。Ctrl は一時解放→復元）、明確に closed のときだけタグ付き
+  Shift+Enter（改行）。IME 問い合わせは `GetGUIThreadInfo` で実フォーカスウィンドウを
+  解決してから行う（WebView2 はトップレベルと IME スレッドが別）。ガード注入キーには
+  実スキャンコードを付与する（Chromium の DOM `code` 対策）。
   Shift/Alt/Win を含む chord と注入 Enter には介入しない。前面判定は
   `EVENT_SYSTEM_FOREGROUND` WinEvent のキャッシュ + Enter down 時の同期解決フォールバック
   （`guardSyncResolve` で計測）。トレイで個別トグル（`msgHookSetEnterGuard`）。

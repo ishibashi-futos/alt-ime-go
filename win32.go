@@ -66,6 +66,8 @@ var (
 	procSetWinEventHook               winProc
 	procUnhookWinEvent                winProc
 	procGetWindowThreadProcessId      winProc
+	procGetGUIThreadInfo              winProc
+	procMapVirtualKeyW                winProc
 	procGetForegroundWindow           winProc
 	procSetForegroundWindow           winProc
 	procIsWindow                      winProc
@@ -155,6 +157,8 @@ var procBindings = []procBinding{
 	{"user32.dll", "SetWinEventHook", &procSetWinEventHook},
 	{"user32.dll", "UnhookWinEvent", &procUnhookWinEvent},
 	{"user32.dll", "GetWindowThreadProcessId", &procGetWindowThreadProcessId},
+	{"user32.dll", "GetGUIThreadInfo", &procGetGUIThreadInfo},
+	{"user32.dll", "MapVirtualKeyW", &procMapVirtualKeyW},
 	{"user32.dll", "GetForegroundWindow", &procGetForegroundWindow},
 	{"user32.dll", "SetForegroundWindow", &procSetForegroundWindow},
 	{"user32.dll", "IsWindow", &procIsWindow},
@@ -467,6 +471,25 @@ func windowProcessId(hwnd uintptr) uint32 {
 	return pid
 }
 
+func windowThreadId(hwnd uintptr) uint32 {
+	r, _ := procGetWindowThreadProcessId.call(hwnd, 0)
+	return uint32(r)
+}
+
+// guiFocusWindow returns the window with keyboard focus on the given thread
+// (0 = the foreground thread), or 0 when it cannot be determined. This is
+// the documented cross-process way to find the real focus owner; for
+// WebView2/Chromium hosts it is a child window on a different thread (often
+// a different process) than the top-level window.
+func guiFocusWindow(tid uint32) uintptr {
+	var gti guiThreadInfo
+	gti.cbSize = uint32(unsafe.Sizeof(gti))
+	if r, _ := procGetGUIThreadInfo.call(uintptr(tid), uintptr(unsafe.Pointer(&gti))); r == 0 {
+		return 0
+	}
+	return gti.hwndFocus
+}
+
 // processImagePath resolves the full Win32 image path of a process. It uses
 // PROCESS_QUERY_LIMITED_INFORMATION so it also works across integrity levels
 // where broader access would be denied; UIPI-protected processes may still
@@ -531,18 +554,6 @@ func sendKeyUp(vk uint16) (uint32, syscall.Errno) {
 	return uint32(n), errno
 }
 
-// sendKeyDown inserts a tagged press used as best-effort recovery when a
-// short guard insertion may have left a physically held modifier logically
-// released. A duplicate key-down over an already-down key is harmless.
-func sendKeyDown(vk uint16) (uint32, syscall.Errno) {
-	input := inputStruct{
-		inputType: inputKeyboard,
-		ki:        keybdInput{wVk: vk, dwFlags: extendedFlagFor(vk), dwExtraInfo: ownInputTag},
-	}
-	n, errno := procSendInput.call(1, uintptr(unsafe.Pointer(&input)), unsafe.Sizeof(input))
-	return uint32(n), errno
-}
-
 // extendedFlagFor marks the right-side modifiers that live in the extended
 // scan-code range, so an injected VK is not folded back onto its left twin.
 func extendedFlagFor(vk uint16) uint32 {
@@ -553,38 +564,56 @@ func extendedFlagFor(vk uint16) uint32 {
 	return 0
 }
 
+// guardKeyInput builds one tagged keyboard input for the guard replacements.
+// Unlike the suppressor/IME injections it also carries the real scan code:
+// Chromium/WebView2 derives the DOM `code` value from the scan code, and a
+// zero-scan-code Enter can be ignored by web keyboard handlers in exactly
+// the applications the guard targets.
+func guardKeyInput(vk uint16, up bool) inputStruct {
+	flags := extendedFlagFor(vk)
+	if up {
+		flags |= keyEventFKeyUp
+	}
+	scan, _ := procMapVirtualKeyW.call(uintptr(vk), mapvkVKToVSC)
+	return inputStruct{
+		inputType: inputKeyboard,
+		ki:        keybdInput{wVk: vk, wScan: uint16(scan), dwFlags: flags, dwExtraInfo: ownInputTag},
+	}
+}
+
+// sendKeyDown inserts a tagged press used as best-effort recovery when a
+// short guard insertion may have left a physically held modifier logically
+// released. A duplicate key-down over an already-down key is harmless.
+func sendKeyDown(vk uint16) (uint32, syscall.Errno) {
+	input := guardKeyInput(vk, false)
+	n, errno := procSendInput.call(1, uintptr(unsafe.Pointer(&input)), unsafe.Sizeof(input))
+	return uint32(n), errno
+}
+
 // sendShiftEnter injects the newline replacement for a guarded plain Enter:
 // a tagged Shift+Enter chord in one SendInput call. Returns the number of
 // events actually inserted (4 on success).
 func sendShiftEnter() (uint32, syscall.Errno) {
 	inputs := [4]inputStruct{
-		{inputType: inputKeyboard, ki: keybdInput{wVk: vkLShift, dwExtraInfo: ownInputTag}},
-		{inputType: inputKeyboard, ki: keybdInput{wVk: vkReturn, dwExtraInfo: ownInputTag}},
-		{inputType: inputKeyboard, ki: keybdInput{wVk: vkReturn, dwFlags: keyEventFKeyUp, dwExtraInfo: ownInputTag}},
-		{inputType: inputKeyboard, ki: keybdInput{wVk: vkLShift, dwFlags: keyEventFKeyUp, dwExtraInfo: ownInputTag}},
+		guardKeyInput(vkLShift, false),
+		guardKeyInput(vkReturn, false),
+		guardKeyInput(vkReturn, true),
+		guardKeyInput(vkLShift, true),
 	}
 	n, errno := procSendInput.call(uintptr(len(inputs)), uintptr(unsafe.Pointer(&inputs[0])), unsafe.Sizeof(inputs[0]))
 	return uint32(n), errno
 }
 
-// sendEnterBypassingCtrl injects the send replacement for a guarded
-// Ctrl+Enter: release the physically held Ctrl side(s), tap Enter, then
-// press them again, all tagged and in one SendInput call, so the target
-// observes a plain Enter while the physical Ctrl state is preserved. With
-// neither side reported down it degrades to a bare Enter tap. Returns the
-// expected and actually inserted event counts.
+// sendEnterBypassingCtrl injects a plain Enter: release the physically held
+// Ctrl side(s), tap Enter, then press them again, all tagged and in one
+// SendInput call, so the target observes a plain Enter while the physical
+// Ctrl state is preserved. With neither side reported down it degrades to a
+// bare Enter tap. Returns the expected and actually inserted event counts.
 func sendEnterBypassingCtrl(lctrl, rctrl bool) (want, got uint32, errno syscall.Errno) {
 	var inputs [6]inputStruct
 	n := 0
 	add := func(vk uint16, up bool) {
-		flags := extendedFlagFor(vk)
-		if up {
-			flags |= keyEventFKeyUp
-		}
-		inputs[n] = inputStruct{
-			inputType: inputKeyboard,
-			ki:        keybdInput{wVk: vk, dwFlags: flags, dwExtraInfo: ownInputTag},
-		}
+		inputs[n] = guardKeyInput(vk, up)
 		n++
 	}
 	if lctrl {

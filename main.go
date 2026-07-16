@@ -306,12 +306,18 @@ func (a *app) onGuardEnter(wParam, lParam uintptr) {
 		return
 	}
 	plain := send
+	imeOpen, imeOK := false, false
 	if !plain && composing {
-		open, ok := queryImeOpen(target)
-		if !ok {
-			debugf("guard: IMC_GETOPENSTATUS failed; treating Enter as not composing")
-		}
-		plain = ok && open
+		imeOpen, imeOK = queryImeOpen(target)
+		// A definitive "closed" means direct (non-IME) input and the
+		// newline replacement is safe. Both "open" and "no answer" deliver
+		// the plain Enter: breaking a possible composition commit is worse
+		// than falling back to the app's default Enter behavior (CON-9
+		// fails open).
+		plain = imeOpen || !imeOK
+	}
+	if guardTrace {
+		debugf("guard: enter send=%t composing=%t imeOpen=%t imeOK=%t -> plain=%t", send, composing, imeOpen, imeOK, plain)
 	}
 	if plain {
 		a.deliverPlainEnter()
@@ -327,17 +333,11 @@ func (a *app) onGuardEnter(wParam, lParam uintptr) {
 
 // deliverPlainEnter injects a tagged plain Enter, temporarily releasing
 // whichever physical Ctrl side is still down so the target does not observe
-// Ctrl+Enter. When the user already released Ctrl by the time this runs, a
-// bare Enter pair is enough.
+// Ctrl+Enter. When the user already released Ctrl by the time this runs,
+// sendEnterBypassingCtrl degrades to a bare Enter tap.
 func (a *app) deliverPlainEnter() {
 	lctrl := getAsyncKeyStateDown(vkLControl)
 	rctrl := getAsyncKeyStateDown(vkRControl)
-	if !lctrl && !rctrl {
-		if n, errno := sendKeyPair(vkReturn); n != 2 {
-			debugf("guard: Enter SendInput inserted %d/2, errno=%d", n, errno)
-		}
-		return
-	}
 	if want, got, errno := sendEnterBypassingCtrl(lctrl, rctrl); got != want {
 		debugf("guard: Ctrl-bypass Enter SendInput inserted %d/%d, errno=%d", got, want, errno)
 		// The physically held side(s) must end logically down again; a

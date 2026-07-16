@@ -116,6 +116,17 @@ func TestNotifyIconDataWLayout(t *testing.T) {
 	assertOffset(t, "hBalloonIcon", unsafe.Offsetof(v.hBalloonIcon), 968)
 }
 
+func TestGuiThreadInfoLayout(t *testing.T) {
+	require64(t)
+	var v guiThreadInfo
+	assertSize(t, unsafe.Sizeof(v), 72)
+	assertOffset(t, "flags", unsafe.Offsetof(v.flags), 4)
+	assertOffset(t, "hwndActive", unsafe.Offsetof(v.hwndActive), 8)
+	assertOffset(t, "hwndFocus", unsafe.Offsetof(v.hwndFocus), 16)
+	assertOffset(t, "hwndCaret", unsafe.Offsetof(v.hwndCaret), 48)
+	assertOffset(t, "rcCaret", unsafe.Offsetof(v.rcCaret), 56)
+}
+
 func TestSmallStructLayouts(t *testing.T) {
 	require64(t)
 	assertSize(t, unsafe.Sizeof(point{}), 8)

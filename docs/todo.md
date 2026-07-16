@@ -118,6 +118,12 @@
 - [x] 変換中ヒューリスティックのユニットテスト（開始キー・終了キー・編集キー・注入キー・resync）
 - [x] ~~IME 変換中の確定 Enter の挙動を記録（v1 既知課題）~~ →
       **実機で確定不能を確認**（M365 Copilot、2026-07-16）。上記の緩和を実装
+- [x] 緩和後も確定不能との実機報告（同日）を受けた追加修正:
+      (1) IME 問い合わせ先を `GetGUIThreadInfo` の実フォーカスウィンドウへ変更
+      （WebView2 はトップレベルと IME スレッドが別で、変換中でも closed が返っていた疑い）、
+      (2) 応答が得られない場合は素の Enter へ fail-open、
+      (3) ガード注入キーへ実スキャンコード付与（Chromium の DOM `code` 対策）、
+      (4) `guardTrace` で置換判定の内訳を DebugView へ記録（既定 ON、検証完了後に false へ）
 - [ ] 対象アプリ（M365 Copilot / Claude Desktop）で Enter→改行、Ctrl+Enter→送信を確認（実機）
 - [ ] Shift+Enter / Alt+Enter / Win+Enter が従来どおり動作することを確認（実機）
 - [ ] 非対象アプリ（メモ帳 / VS Code / ブラウザ）で一切介入しないことを確認（実機）

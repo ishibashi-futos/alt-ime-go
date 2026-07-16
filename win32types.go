@@ -62,6 +62,8 @@ const (
 	inputKeyboard        = 1
 	keyEventFExtendedKey = 0x0001
 	keyEventFKeyUp       = 0x0002
+
+	mapvkVKToVSC = 0 // MapVirtualKeyW: virtual key -> scan code
 )
 
 // WinEvent hook (foreground tracking for the Enter guard).
@@ -312,6 +314,19 @@ type paintStruct struct {
 	fRestore    int32
 	fIncUpdate  int32
 	rgbReserved [32]byte
+}
+
+// GUITHREADINFO.
+type guiThreadInfo struct {
+	cbSize        uint32
+	flags         uint32
+	hwndActive    uintptr
+	hwndFocus     uintptr
+	hwndCapture   uintptr
+	hwndMenuOwner uintptr
+	hwndMoveSize  uintptr
+	hwndCaret     uintptr
+	rcCaret       rect
 }
 
 // GUID.
