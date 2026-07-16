@@ -180,6 +180,9 @@ func ctrlWndProc(hwnd, msg, wParam, lParam uintptr) uintptr {
 	case msgSwitch:
 		a.onSwitchRequest(wParam, lParam)
 		return 0
+	case msgGuardEnter:
+		a.onGuardEnter(wParam, lParam)
+		return 0
 	case msgTray:
 		a.onTrayEvent(wParam, lParam)
 		return 0
@@ -281,6 +284,70 @@ func (a *app) doSwitch(open bool, target uintptr) {
 		a.osd.show(kind, target)
 	} else {
 		a.osd.show(osdFail, target)
+	}
+}
+
+// onGuardEnter is the UI half of the Enter-guard dispatch. The physical
+// Enter was already consumed by the hook; this decides what to deliver
+// instead. A plain Enter goes back when Ctrl was held (send intent) or when
+// a composition is believed open and the target's IME reports open — the
+// CON-9 mitigation that lets Enter keep committing Japanese input.
+// Shift+Enter (newline) is delivered otherwise. If the foreground changed
+// while the request sat in two queues, it is dropped: injecting into a
+// different application would be worse than losing one keystroke.
+func (a *app) onGuardEnter(wParam, lParam uintptr) {
+	if a.shuttingDown || !a.enabled || !a.guardEnabled {
+		return
+	}
+	send, composing := unpackGuardWParam(wParam)
+	target := lParam
+	if target == 0 || !isWindow(target) || getForegroundWindow() != target {
+		debugf("guard: replacement dropped (foreground changed)")
+		return
+	}
+	plain := send
+	if !plain && composing {
+		open, ok := queryImeOpen(target)
+		if !ok {
+			debugf("guard: IMC_GETOPENSTATUS failed; treating Enter as not composing")
+		}
+		plain = ok && open
+	}
+	if plain {
+		a.deliverPlainEnter()
+		return
+	}
+	if n, errno := sendShiftEnter(); n != 4 {
+		debugf("guard: Shift+Enter SendInput inserted %d/4, errno=%d", n, errno)
+		// A partial insertion can leave the injected Shift logically down;
+		// an unmatched key-up is harmless.
+		sendKeyUp(vkLShift)
+	}
+}
+
+// deliverPlainEnter injects a tagged plain Enter, temporarily releasing
+// whichever physical Ctrl side is still down so the target does not observe
+// Ctrl+Enter. When the user already released Ctrl by the time this runs, a
+// bare Enter pair is enough.
+func (a *app) deliverPlainEnter() {
+	lctrl := getAsyncKeyStateDown(vkLControl)
+	rctrl := getAsyncKeyStateDown(vkRControl)
+	if !lctrl && !rctrl {
+		if n, errno := sendKeyPair(vkReturn); n != 2 {
+			debugf("guard: Enter SendInput inserted %d/2, errno=%d", n, errno)
+		}
+		return
+	}
+	if want, got, errno := sendEnterBypassingCtrl(lctrl, rctrl); got != want {
+		debugf("guard: Ctrl-bypass Enter SendInput inserted %d/%d, errno=%d", got, want, errno)
+		// The physically held side(s) must end logically down again; a
+		// duplicate key-down over an already-down key is harmless.
+		if lctrl {
+			sendKeyDown(vkLControl)
+		}
+		if rctrl {
+			sendKeyDown(vkRControl)
+		}
 	}
 }
 

@@ -2,10 +2,13 @@ package main
 
 // Enter guard state machine. In guard-target applications a plain Enter is
 // blocked and replaced with Shift+Enter (newline) and Ctrl+Enter is blocked
-// and replaced with a plain Enter (send). Pure logic with no Win32
-// dependency so the full transition table stays unit-testable on any host.
-// The machine is owned exclusively by the hook thread; nothing here is safe
-// for concurrent use.
+// and replaced with a plain Enter (send). The machine only decides to
+// consume the physical press; the replacement itself is chosen and injected
+// by the UI thread (two-stage dispatch), which can also check the target's
+// IME open status with a bounded call — something this hook-side logic must
+// never do. Pure logic with no Win32 dependency so the full transition
+// table stays unit-testable on any host. The machine is owned exclusively
+// by the hook thread; nothing here is safe for concurrent use.
 
 type guardPhase int
 
@@ -21,11 +24,16 @@ const (
 type guardAction struct {
 	// block: consume this event instead of passing it down the hook chain.
 	block bool
-	// injectNewline: emit the tagged Shift+Enter replacement (plain Enter).
-	injectNewline bool
-	// injectSend: emit the tagged plain-Enter replacement (Ctrl+Enter). The
-	// hook layer decides which physical Ctrl side(s) to release around it.
-	injectSend bool
+	// dispatch: a guarded Enter was consumed; forward a replacement request
+	// to the UI thread carrying the two fields below.
+	dispatch bool
+	// send: Ctrl (and no other modifier) was held — the user asked to send.
+	send bool
+	// composing: an IME composition is believed to be in progress (CON-9
+	// heuristic): a composition-starting key was seen after the last event
+	// known to commit or cancel one. The UI thread combines this with the
+	// target's actual IME open status before overriding the replacement.
+	composing bool
 }
 
 type guardMachine struct {
@@ -34,6 +42,13 @@ type guardMachine struct {
 	// indexed by VK. Only the eight side-specific modifier codes are ever
 	// set; fixed-size so feed() performs no allocation inside the callback.
 	mods [256]bool
+	// composing is the CON-9 heuristic bit, maintained from the key stream
+	// (this machine cannot see the real cross-process composition state).
+	// Stale-true fails open: the Enter is delivered as-is, matching the
+	// target's default behavior. Stale-false re-breaks composition commit,
+	// so the events that clear it are kept to the ones that reliably end a
+	// composition (Enter, Escape, IME toggles, focus change, resync).
+	composing bool
 }
 
 func newGuardMachine() *guardMachine {
@@ -70,6 +85,38 @@ func normalizeModVK(vk uint32, extended bool) uint32 {
 	return vk
 }
 
+// isCompositionStarter reports whether a key press plausibly starts or
+// extends an IME composition: letters, digits, and the OEM punctuation
+// range. Numpad keys are excluded (Microsoft IME commits them directly by
+// default) and so is Space, which converts an existing composition but
+// never starts one.
+func isCompositionStarter(vk uint32) bool {
+	switch {
+	case vk >= 0x30 && vk <= 0x39: // 0-9
+		return true
+	case vk >= 0x41 && vk <= 0x5A: // A-Z
+		return true
+	case vk >= 0xBA && vk <= 0xC0: // OEM_1..OEM_3 (;: /? @` etc.)
+		return true
+	case vk >= 0xDB && vk <= 0xDF: // OEM_4..OEM_8 ([{ \| ]} '~ etc.)
+		return true
+	case vk == 0xE2: // OEM_102
+		return true
+	}
+	return false
+}
+
+// endsComposition reports the keys that reliably commit or cancel a
+// composition besides Enter: Escape and the IME mode toggles (which commit
+// any pending text before switching).
+func endsComposition(vk uint32) bool {
+	switch vk {
+	case vkEscape, vkKana, vkKanji, vkImeOn, vkImeOff, vkOemAuto, vkOemEnlw:
+		return true
+	}
+	return false
+}
+
 // resync replaces the modifier view and returns the machine to idle.
 // Callers run it outside the hook callback (startup, enable/disable,
 // session unlock, power resume) with the keys the OS currently reports as
@@ -83,6 +130,14 @@ func (m *guardMachine) resync(down []uint32) {
 		}
 	}
 	m.phase = guardIdle
+	m.composing = false
+}
+
+// clearComposing marks any believed composition as ended. The hook layer
+// calls it when the foreground window changes, because losing focus commits
+// or cancels a composition.
+func (m *guardMachine) clearComposing() {
+	m.composing = false
 }
 
 func (m *guardMachine) anyDown(vks ...uint32) bool {
@@ -96,8 +151,7 @@ func (m *guardMachine) anyDown(vks ...uint32) bool {
 
 // feed consumes one keyboard transition and reports the required action.
 // active is evaluated by the hook layer only for Enter events: guard
-// enabled and the foreground window is a guard target. It is the single
-// gate where a future "IME composition in progress" veto belongs.
+// enabled and the foreground window is a guard target.
 func (m *guardMachine) feed(ev keyEvent, active bool) guardAction {
 	var act guardAction
 	if ev.vk == 0 || ev.vk >= 256 {
@@ -108,7 +162,22 @@ func (m *guardMachine) feed(ev keyEvent, active bool) guardAction {
 		return act
 	}
 	if ev.vk != vkReturn {
+		if ev.down {
+			// Injected keys from other processes reach the target too, so
+			// they move the composition belief exactly like physical ones.
+			if isCompositionStarter(ev.vk) {
+				m.composing = true
+			} else if endsComposition(ev.vk) {
+				m.composing = false
+			}
+		}
 		return act
+	}
+	// Enter: whether it is guarded, passed through, or injected by another
+	// process, a down commits or replaces whatever composition was open.
+	composingAtPress := m.composing
+	if ev.down {
+		m.composing = false
 	}
 	switch m.phase {
 	case guardIdle:
@@ -119,11 +188,9 @@ func (m *guardMachine) feed(ev keyEvent, active bool) guardAction {
 			return act // Shift/Alt/Win chords pass through untouched
 		}
 		act.block = true
-		if m.anyDown(vkLControl, vkRControl) {
-			act.injectSend = true
-		} else {
-			act.injectNewline = true
-		}
+		act.dispatch = true
+		act.send = m.anyDown(vkLControl, vkRControl)
+		act.composing = composingAtPress
 		m.phase = guardSwallow
 	case guardSwallow:
 		if ev.injected {

@@ -34,6 +34,22 @@ func setIMEByVK(open bool) bool {
 	return true
 }
 
+// queryImeOpen asks the target's default IME window for its open status
+// (WM_IME_CONTROL/IMC_GETOPENSTATUS) under the same hard deadline as the
+// IMM32 switch path. ok is false when no answer could be obtained (no IME
+// window, timeout, hung target, UIPI denial). Used by the Enter guard to
+// decide whether a believed composition can be real; it is a UI-thread-only
+// call and deliberately not a universal "real IME state" probe (CON-5 still
+// holds for the OSD).
+func queryImeOpen(target uintptr) (open, ok bool) {
+	imeWnd := immGetDefaultIMEWnd(target)
+	if imeWnd == 0 {
+		return false, false
+	}
+	status, ok, _ := sendMessageTimeout(imeWnd, wmImeControl, imcGetOpenStatus, 0, smtoAbortIfHung|smtoBlock, imm32TimeoutMs)
+	return status != 0, ok
+}
+
 // setIMEByIMM32 targets the default IME window of the tap-time foreground
 // window with WM_IME_CONTROL/IMC_SETOPENSTATUS under a hard deadline.
 // A plain SendMessage (unbounded wait on a foreign window) is never used.

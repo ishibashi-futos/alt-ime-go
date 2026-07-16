@@ -111,10 +111,19 @@
 - [x] `GetWindowThreadProcessId` / `OpenProcess` / `QueryFullProcessImageNameW` バインディングと exe 名照合（`matchGuardTarget`）
 - [x] トレイメニュー「Enter送信ガード」トグル（`msgHookSetEnterGuard`、既定 ON）
 - [x] 有効化・ガードトグル・セッション/電源復帰時に両状態機械を resync しキャッシュ再解決
+- [x] 置換選択を UI スレッドへ二段配送化（`msgHookDispatchGuard`→`msgGuardEnter`、
+      UI 側で前面再検証。callback は消費と配送のみ）
+- [x] IME 変換確定 Enter の緩和（CON-9/FR-24）: キー列からの変換中ヒューリスティック +
+      `IMC_GETOPENSTATUS`（有界）で推定し、変換中と推定した Enter は素の Enter を再注入
+- [x] 変換中ヒューリスティックのユニットテスト（開始キー・終了キー・編集キー・注入キー・resync）
+- [x] ~~IME 変換中の確定 Enter の挙動を記録（v1 既知課題）~~ →
+      **実機で確定不能を確認**（M365 Copilot、2026-07-16）。上記の緩和を実装
 - [ ] 対象アプリ（M365 Copilot / Claude Desktop）で Enter→改行、Ctrl+Enter→送信を確認（実機）
 - [ ] Shift+Enter / Alt+Enter / Win+Enter が従来どおり動作することを確認（実機）
 - [ ] 非対象アプリ（メモ帳 / VS Code / ブラウザ）で一切介入しないことを確認（実機）
-- [ ] IME 変換中の確定 Enter の挙動を記録（CON-9、v1 既知課題）（実機）
+- [ ] IME 変換中の Enter で確定できること（かな→Enter、候補選択→Enter）を確認（実機・FR-24）
+- [ ] IME OFF での Enter が改行になり、確定後 2 回目の Enter も改行になることを確認（実機）
+- [ ] ヒューリスティックが外れるケース（マウスクリック確定直後の Enter 等）の挙動を記録（実機・CON-9）
 - [ ] Enter 長押しで stuck key・意図しない送信がないことを確認（実機）
 - [ ] Ctrl+Enter 後に Ctrl が論理押しっぱなしにならないことを確認（続く Ctrl+英字）（実機）
 - [ ] Alt+Tab 直後の即 Enter で対象判定が正しいこと、`guardSyncResolve` の頻度を DebugView で記録（実機）
@@ -191,5 +200,6 @@
 - [ ] コード署名
 - [ ] UIAccess + 署名 + 安全なインストール形態の設計判断
 - [ ] Ctrl+Shift 方式（割り当て・優先順位・排他の仕様確定後）
-- [ ] Enter送信ガード: IME 変換中検出（実機記録の結果、問題があれば。候補ウィンドウ検出等のヒューリスティック）
+- [ ] Enter送信ガード: 変換中推定の精度向上（実機記録の結果、必要なら。候補ウィンドウ検出や
+      `EVENT_OBJECT_IME_SHOW/HIDE` WinEvent の併用等）
 - [ ] Enter送信ガード: auto-repeat での改行連打対応の判断（v1 は repeat を飲むだけ）

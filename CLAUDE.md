@@ -66,11 +66,13 @@ GOOS=windows GOARCH=amd64 go build -ldflags "-H windowsgui -s -w" -o alt-ime-go.
 - **二段配送:** Alt-up callback 復帰後に UI へ切替要求を送り、IME 送出直前に Alt 解放を確認する。
 - **対象競合防止:** 前面 HWND が変わった要求、または Alt が未解放の要求は破棄する。
 - **Enter送信ガード:** 対象アプリ（前面プロセスの exe 名が `enterGuardTargetExes` に一致）でのみ、
-  Enter 単独の down/up 対をブロックしてタグ付き Shift+Enter（改行）を注入し、Ctrl+Enter は
-  Ctrl 一時解放→Enter→Ctrl 復元の注入で素の Enter（送信）に変換する。Shift/Alt/Win を含む
-  chord と注入 Enter には介入しない。前面判定は `EVENT_SYSTEM_FOREGROUND` WinEvent の
-  キャッシュ + Enter down 時の同期解決フォールバック（`guardSyncResolve` で計測）。
-  トレイで個別トグル（`msgHookSetEnterGuard`）。
+  Enter 単独／Ctrl+Enter の down/up 対を callback で消費し、置換の選択と注入は UI スレッドへ
+  二段配送（`msgHookDispatchGuard`→`msgGuardEnter`、UI で前面再検証）。Ctrl+Enter、または
+  変換中ヒューリスティック成立かつ `IMC_GETOPENSTATUS` が open なら素の Enter
+  （送信 / 変換確定。Ctrl は一時解放→復元）、それ以外はタグ付き Shift+Enter（改行）。
+  Shift/Alt/Win を含む chord と注入 Enter には介入しない。前面判定は
+  `EVENT_SYSTEM_FOREGROUND` WinEvent のキャッシュ + Enter down 時の同期解決フォールバック
+  （`guardSyncResolve` で計測）。トレイで個別トグル（`msgHookSetEnterGuard`）。
 - **IME:** 主経路は `VK_IME_ON/OFF` の絶対指定。`SendInput` の送出数を必ず検査する。
 - **IMM32:** 明示選択時だけ使用し、通常の `SendMessage` ではなく 100ms の `SendMessageTimeout` を使う。
 - **OSD:** 送出成功時だけ A/あ、送出失敗時は `!`。実 IME 状態を確認済みとは扱わない。
@@ -81,9 +83,12 @@ GOOS=windows GOARCH=amd64 go build -ldflags "-H windowsgui -s -w" -o alt-ime-go.
 - `nCode < 0` / 非 `HC_ACTION` では `lParam` を参照しない。
 - フックは原則 `CallNextHookEx` の戻り値を返す。Alt は決してブロックしない。ブロックしてよいのは
   Enter送信ガードが置換する Enter の down/up 対だけで、対応する up と auto-repeat も対で飲む。
-- IME 変換中の確定 Enter もガードが置換してしまう（他プロセスの変換中状態を確実に検出する公式 API
-  がない）。発動判定は `feedGuard` の `active` 算出 1 箇所に集約し、実機記録の結果を見て
-  変換中検出を後付けする。
+- 他プロセスの IME 変換中状態を確実に検出する公式 API はない。ガードはキー列からの変換中
+  ヒューリスティック（文字キーで疑い開始、Enter/Esc/IME切替キー/フォーカス変更でクリア）+
+  UI スレッドでの `IMC_GETOPENSTATUS` で推定し、変換中と推定した Enter は素の Enter を
+  再注入して確定を維持する。誤推定は fail-open（素の Enter = アプリ既定の送信）に倒す設計で、
+  マウスクリック確定直後の Enter は送信になり得る。クリア条件を安易に増やさない
+  （stale-false は変換確定を壊す）。
 - 外部ツールの注入入力を一律無視しない。進行中の空打ちのキャンセル要因になり得る。
 - `LowLevelHooksTimeout` 超過時、Windows 7+ ではフックが通知なしに削除され得る。UI 処理をフックスレッドへ持ち込まない。
 - `SendInput` とウィンドウメッセージは UIPI の制約を受ける。送出成功と実 IME 状態を混同しない。

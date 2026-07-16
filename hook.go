@@ -4,11 +4,11 @@ package main
 
 // The WH_KEYBOARD_LL hook and its dedicated OS thread. The callback performs
 // only fixed-cost work: state-machine updates, the optional two-stage menu
-// suppressor, the Enter-guard replacement injections, and a
-// PostThreadMessage to this thread's own queue. Everything else — including
-// all logging — happens in the hook thread's message loop after the callback
-// has returned (NFR-1/2), and the actual IME work happens on the UI thread
-// via the second stage of the dispatch. The guard's foreground-exe cache is
+// suppressor, and a PostThreadMessage to this thread's own queue. Everything
+// else — including all logging — happens in the hook thread's message loop
+// after the callback has returned (NFR-1/2). The actual IME work and the
+// Enter-guard replacement injections happen on the UI thread via the second
+// stage of their respective dispatches. The guard's foreground-exe cache is
 // maintained by an EVENT_SYSTEM_FOREGROUND WinEvent hook on this thread's
 // pump; the rare synchronous fallback inside the callback is bounded and
 // counted (guardSyncResolve).
@@ -49,9 +49,7 @@ type hookThread struct {
 	suppressUpShort   atomic.Uint32 // Alt-up suppressor inserted fewer than 2 events
 	suppressCleanup   atomic.Uint32 // best-effort key-up cleanup was not inserted
 	postFailed        atomic.Uint32 // PostThreadMessage from the callback failed
-	guardInjectShort  atomic.Uint32 // guard replacement SendInput inserted too few events
 	guardSyncResolve  atomic.Uint32 // guard resolved the foreground exe inside the callback
-	guardCtrlMissing  atomic.Uint32 // Ctrl+Enter fired but async state reported no Ctrl down
 	maxLatency        atomic.Uint64 // QPC ticks; only when measureHookLatency
 }
 
@@ -147,42 +145,26 @@ func (h *hookThread) handleKey(wParam uintptr, k *kbdllHookStruct) (block bool) 
 }
 
 // feedGuard runs the Enter-guard machine over the same event stream as the
-// tap machine and performs its replacement injections. Only a physical
-// Enter down needs the foreground evaluation; every other event just
-// updates the guard's modifier tracking.
+// tap machine. A guarded Enter is only consumed here; choosing and
+// injecting the replacement happens on the UI thread (stage two), which can
+// combine the machine's composition belief with the target's actual IME
+// open status — a bounded external call this callback must never make.
+// Only a physical Enter down needs the foreground evaluation; every other
+// event just updates the guard's modifier and composition tracking.
 func (h *hookThread) feedGuard(ev keyEvent) bool {
 	active := false
 	if ev.vk == vkReturn && ev.down && !ev.injected && h.guardEnabled {
 		active = h.guardForeground()
 	}
 	act := h.guard.feed(ev, active)
-	if act.injectNewline {
-		if n, _ := sendShiftEnter(); n != 4 {
-			h.guardInjectShort.Add(1)
-			// A partial insertion can leave the injected Shift logically
-			// down; an unmatched key-up is harmless.
-			if cleanup, _ := sendKeyUp(vkLShift); cleanup != 1 {
-				h.suppressCleanup.Add(1)
-			}
-		}
-	}
-	if act.injectSend {
-		lctrl := getAsyncKeyStateDown(vkLControl)
-		rctrl := getAsyncKeyStateDown(vkRControl)
-		if !lctrl && !rctrl {
-			// The machine saw a Ctrl down the async state no longer reports:
-			// inject a bare Enter rather than releasing nothing.
-			h.guardCtrlMissing.Add(1)
-		}
-		if want, got, _ := sendEnterBypassingCtrl(lctrl, rctrl); got != want {
-			h.guardInjectShort.Add(1)
-			// The physically held side(s) must end logically down again; a
-			// duplicate key-down over an already-down key is harmless.
-			if lctrl {
-				sendKeyDown(vkLControl)
-			}
-			if rctrl {
-				sendKeyDown(vkRControl)
+	if act.dispatch {
+		// Stage one, mirroring the IME-switch dispatch: post to this
+		// thread's own queue so the request reaches the UI only after this
+		// callback has returned. h.fg.hwnd is the foreground window the
+		// active decision was just made against.
+		if target := h.fg.hwnd; target != 0 {
+			if !postThreadMessage(h.tid, msgHookDispatchGuard, packGuardWParam(act.send, act.composing), target) {
+				h.postFailed.Add(1)
 			}
 		}
 	}
@@ -212,6 +194,8 @@ func (h *hookThread) refreshForeground(hwnd uintptr) {
 	}
 	h.fg.hwnd = hwnd
 	h.fg.isTarget = isTarget
+	// Losing or changing focus commits or cancels any open composition.
+	h.guard.clearComposing()
 }
 
 // winEventProc receives EVENT_SYSTEM_FOREGROUND. WINEVENT_OUTOFCONTEXT
@@ -282,6 +266,15 @@ func (h *hookThread) run(ready chan<- error) {
 					debugf("hook: PostMessage(msgSwitch) failed")
 				}
 			}
+		case msgHookDispatchGuard:
+			// Stage two of the guard dispatch: the physical Enter is already
+			// consumed; the UI re-validates the target and injects the
+			// replacement.
+			if h.enabled && h.guardEnabled {
+				if !postMessage(h.ctrl, msgGuardEnter, msg.wParam, msg.lParam) {
+					debugf("hook: PostMessage(msgGuardEnter) failed")
+				}
+			}
 		case msgHookSetEnabled:
 			h.enabled = msg.wParam != 0
 			h.resyncMachines()
@@ -344,14 +337,8 @@ func (h *hookThread) drainDiagnostics() {
 	if n := h.postFailed.Swap(0); n != 0 {
 		debugf("PostThreadMessage(dispatch) failed inside callback (%d times)", n)
 	}
-	if n := h.guardInjectShort.Swap(0); n != 0 {
-		debugf("Enter guard replacement SendInput inserted too few events (%d times)", n)
-	}
 	if n := h.guardSyncResolve.Swap(0); n != 0 {
 		debugf("Enter guard resolved the foreground exe inside the callback (%d times)", n)
-	}
-	if n := h.guardCtrlMissing.Swap(0); n != 0 {
-		debugf("Ctrl+Enter guard saw no Ctrl in the async state (%d times)", n)
 	}
 }
 

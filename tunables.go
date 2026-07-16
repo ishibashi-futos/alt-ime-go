@@ -191,3 +191,29 @@ func packSwitchWParam(open bool, vk uint32) uintptr {
 func unpackSwitchWParam(wp uintptr) (open bool, vk uint32) {
 	return wp&switchOpenBit != 0, uint32(wp & 0xFF)
 }
+
+// ---- Enter-guard request packing (hook thread -> UI window message) ----
+
+// The guarded Enter is consumed inside the callback; WPARAM carries what the
+// UI needs to pick the replacement: whether Ctrl was held (send intent) and
+// whether a composition is believed to be in progress.
+
+const (
+	guardSendBit      = 0x1
+	guardComposingBit = 0x2
+)
+
+func packGuardWParam(send, composing bool) uintptr {
+	var wp uintptr
+	if send {
+		wp |= guardSendBit
+	}
+	if composing {
+		wp |= guardComposingBit
+	}
+	return wp
+}
+
+func unpackGuardWParam(wp uintptr) (send, composing bool) {
+	return wp&guardSendBit != 0, wp&guardComposingBit != 0
+}

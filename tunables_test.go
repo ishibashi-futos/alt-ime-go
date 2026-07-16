@@ -68,6 +68,17 @@ func TestFailThrottle(t *testing.T) {
 	}
 }
 
+func TestGuardWParamPacking(t *testing.T) {
+	for _, send := range []bool{false, true} {
+		for _, composing := range []bool{false, true} {
+			gotSend, gotComposing := unpackGuardWParam(packGuardWParam(send, composing))
+			if gotSend != send || gotComposing != composing {
+				t.Errorf("roundtrip(%v, %v) = (%v, %v)", send, composing, gotSend, gotComposing)
+			}
+		}
+	}
+}
+
 func TestSwitchWParamPacking(t *testing.T) {
 	cases := []struct {
 		open bool

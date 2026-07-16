@@ -25,10 +25,15 @@ const (
 	vkShift              = 0x10
 	vkControl            = 0x11
 	vkMenu               = 0x12
+	vkKana               = 0x15 // VK_HANGUL/VK_KANA
 	vkImeOn              = 0x16
+	vkKanji              = 0x19 // VK_HANJA/VK_KANJI
 	vkImeOff             = 0x1A
+	vkEscape             = 0x1B
 	vkLWin               = 0x5B
 	vkRWin               = 0x5C
+	vkOemAuto            = 0xF3 // 半角/全角 (auto)
+	vkOemEnlw            = 0xF4 // 半角/全角 (enlw)
 	vkLShift             = 0xA0
 	vkRShift             = 0xA1
 	vkLControl           = 0xA2
@@ -90,16 +95,19 @@ const (
 	msgSwitch      = wmApp + 1 // wParam: packed open+VK, lParam: target HWND
 	msgTray        = wmApp + 2 // tray callback (NOTIFYICON_VERSION_4 encoding)
 	msgHookStopped = wmApp + 3 // wParam: 1 when the hook loop died unexpectedly
+	msgGuardEnter  = wmApp + 4 // wParam: packed send+composing, lParam: target HWND
 
 	msgHookDispatchSwitch = wmApp + 16 // same payload as msgSwitch
 	msgHookSetEnabled     = wmApp + 17 // wParam: 0/1
 	msgHookReset          = wmApp + 18
 	msgHookStop           = wmApp + 19
 	msgHookSetEnterGuard  = wmApp + 20 // wParam: 0/1
+	msgHookDispatchGuard  = wmApp + 21 // same payload as msgGuardEnter
 )
 
 // IMM32 / WM_IME_CONTROL.
 const (
+	imcGetOpenStatus = 0x0005
 	imcSetOpenStatus = 0x0006
 
 	smtoBlock       = 0x0001
