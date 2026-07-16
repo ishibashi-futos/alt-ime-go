@@ -34,6 +34,8 @@ var (
 	procCreateMutexW              winProc
 	procQueryPerformanceCounter   winProc
 	procQueryPerformanceFrequency winProc
+	procOpenProcess               winProc
+	procQueryFullProcessImageName winProc
 
 	// user32
 	procRegisterClassExW              winProc
@@ -61,6 +63,9 @@ var (
 	procSetWindowsHookExW             winProc
 	procUnhookWindowsHookEx           winProc
 	procCallNextHookEx                winProc
+	procSetWinEventHook               winProc
+	procUnhookWinEvent                winProc
+	procGetWindowThreadProcessId      winProc
 	procGetForegroundWindow           winProc
 	procSetForegroundWindow           winProc
 	procIsWindow                      winProc
@@ -119,6 +124,8 @@ var procBindings = []procBinding{
 	{"kernel32.dll", "CreateMutexW", &procCreateMutexW},
 	{"kernel32.dll", "QueryPerformanceCounter", &procQueryPerformanceCounter},
 	{"kernel32.dll", "QueryPerformanceFrequency", &procQueryPerformanceFrequency},
+	{"kernel32.dll", "OpenProcess", &procOpenProcess},
+	{"kernel32.dll", "QueryFullProcessImageNameW", &procQueryFullProcessImageName},
 
 	{"user32.dll", "RegisterClassExW", &procRegisterClassExW},
 	{"user32.dll", "CreateWindowExW", &procCreateWindowExW},
@@ -145,6 +152,9 @@ var procBindings = []procBinding{
 	{"user32.dll", "SetWindowsHookExW", &procSetWindowsHookExW},
 	{"user32.dll", "UnhookWindowsHookEx", &procUnhookWindowsHookEx},
 	{"user32.dll", "CallNextHookEx", &procCallNextHookEx},
+	{"user32.dll", "SetWinEventHook", &procSetWinEventHook},
+	{"user32.dll", "UnhookWinEvent", &procUnhookWinEvent},
+	{"user32.dll", "GetWindowThreadProcessId", &procGetWindowThreadProcessId},
 	{"user32.dll", "GetForegroundWindow", &procGetForegroundWindow},
 	{"user32.dll", "SetForegroundWindow", &procSetForegroundWindow},
 	{"user32.dll", "IsWindow", &procIsWindow},
@@ -439,6 +449,46 @@ func callNextHookEx(nCode, wParam, lParam uintptr) uintptr {
 	return r
 }
 
+// setWinEventHook registers an out-of-context WinEvent hook for one event.
+// The callback is delivered through the registering thread's message pump.
+func setWinEventHook(event uint32, fn uintptr) uintptr {
+	r, _ := procSetWinEventHook.call(uintptr(event), uintptr(event), 0, fn, 0, 0, wineventOutOfContext)
+	return r
+}
+
+func unhookWinEvent(hhook uintptr) bool {
+	r, _ := procUnhookWinEvent.call(hhook)
+	return r != 0
+}
+
+func windowProcessId(hwnd uintptr) uint32 {
+	var pid uint32
+	procGetWindowThreadProcessId.call(hwnd, uintptr(unsafe.Pointer(&pid)))
+	return pid
+}
+
+// processImagePath resolves the full Win32 image path of a process. It uses
+// PROCESS_QUERY_LIMITED_INFORMATION so it also works across integrity levels
+// where broader access would be denied; UIPI-protected processes may still
+// fail, which callers treat as "not a guard target".
+func processImagePath(pid uint32) (string, bool) {
+	if pid == 0 {
+		return "", false
+	}
+	h, _ := procOpenProcess.call(processQueryLimitedInformation, 0, uintptr(pid))
+	if h == 0 {
+		return "", false
+	}
+	defer syscall.CloseHandle(syscall.Handle(h))
+	var buf [512]uint16
+	size := uint32(len(buf))
+	r, _ := procQueryFullProcessImageName.call(h, 0, uintptr(unsafe.Pointer(&buf[0])), uintptr(unsafe.Pointer(&size)))
+	if r == 0 || size == 0 || size >= uint32(len(buf)) {
+		return "", false
+	}
+	return syscall.UTF16ToString(buf[:size]), true
+}
+
 func getForegroundWindow() uintptr {
 	r, _ := procGetForegroundWindow.call()
 	return r
@@ -479,6 +529,80 @@ func sendKeyUp(vk uint16) (uint32, syscall.Errno) {
 	}
 	n, errno := procSendInput.call(1, uintptr(unsafe.Pointer(&input)), unsafe.Sizeof(input))
 	return uint32(n), errno
+}
+
+// sendKeyDown inserts a tagged press used as best-effort recovery when a
+// short guard insertion may have left a physically held modifier logically
+// released. A duplicate key-down over an already-down key is harmless.
+func sendKeyDown(vk uint16) (uint32, syscall.Errno) {
+	input := inputStruct{
+		inputType: inputKeyboard,
+		ki:        keybdInput{wVk: vk, dwFlags: extendedFlagFor(vk), dwExtraInfo: ownInputTag},
+	}
+	n, errno := procSendInput.call(1, uintptr(unsafe.Pointer(&input)), unsafe.Sizeof(input))
+	return uint32(n), errno
+}
+
+// extendedFlagFor marks the right-side modifiers that live in the extended
+// scan-code range, so an injected VK is not folded back onto its left twin.
+func extendedFlagFor(vk uint16) uint32 {
+	switch vk {
+	case vkRControl, vkRMenu:
+		return keyEventFExtendedKey
+	}
+	return 0
+}
+
+// sendShiftEnter injects the newline replacement for a guarded plain Enter:
+// a tagged Shift+Enter chord in one SendInput call. Returns the number of
+// events actually inserted (4 on success).
+func sendShiftEnter() (uint32, syscall.Errno) {
+	inputs := [4]inputStruct{
+		{inputType: inputKeyboard, ki: keybdInput{wVk: vkLShift, dwExtraInfo: ownInputTag}},
+		{inputType: inputKeyboard, ki: keybdInput{wVk: vkReturn, dwExtraInfo: ownInputTag}},
+		{inputType: inputKeyboard, ki: keybdInput{wVk: vkReturn, dwFlags: keyEventFKeyUp, dwExtraInfo: ownInputTag}},
+		{inputType: inputKeyboard, ki: keybdInput{wVk: vkLShift, dwFlags: keyEventFKeyUp, dwExtraInfo: ownInputTag}},
+	}
+	n, errno := procSendInput.call(uintptr(len(inputs)), uintptr(unsafe.Pointer(&inputs[0])), unsafe.Sizeof(inputs[0]))
+	return uint32(n), errno
+}
+
+// sendEnterBypassingCtrl injects the send replacement for a guarded
+// Ctrl+Enter: release the physically held Ctrl side(s), tap Enter, then
+// press them again, all tagged and in one SendInput call, so the target
+// observes a plain Enter while the physical Ctrl state is preserved. With
+// neither side reported down it degrades to a bare Enter tap. Returns the
+// expected and actually inserted event counts.
+func sendEnterBypassingCtrl(lctrl, rctrl bool) (want, got uint32, errno syscall.Errno) {
+	var inputs [6]inputStruct
+	n := 0
+	add := func(vk uint16, up bool) {
+		flags := extendedFlagFor(vk)
+		if up {
+			flags |= keyEventFKeyUp
+		}
+		inputs[n] = inputStruct{
+			inputType: inputKeyboard,
+			ki:        keybdInput{wVk: vk, dwFlags: flags, dwExtraInfo: ownInputTag},
+		}
+		n++
+	}
+	if lctrl {
+		add(vkLControl, true)
+	}
+	if rctrl {
+		add(vkRControl, true)
+	}
+	add(vkReturn, false)
+	add(vkReturn, true)
+	if rctrl {
+		add(vkRControl, false)
+	}
+	if lctrl {
+		add(vkLControl, false)
+	}
+	r, errno := procSendInput.call(uintptr(n), uintptr(unsafe.Pointer(&inputs[0])), unsafe.Sizeof(inputs[0]))
+	return uint32(n), uint32(r), errno
 }
 
 func setTimer(hwnd uintptr, id uintptr, ms uint32) bool {

@@ -39,6 +39,7 @@ GOOS=windows GOARCH=amd64 go build -ldflags "-H windowsgui -s -w" -o alt-ime-go.
 ├─ win32.go                 # Win32 バインディング（syscall 直接呼び出し）
 ├─ win32types.go            # Win32 定数・構造体（OS 非依存・レイアウトテスト対象）
 ├─ tapstate.go              # 空打ち状態機械（純粋ロジック・OS 非依存）
+├─ enterguard.go            # Enter送信ガード状態機械（純粋ロジック・OS 非依存）
 ├─ tunables.go              # 設定定数・OSD 寸法・DPI スケール（OS 非依存）
 ├─ *_test.go                # 状態機械、Tunables、構造体レイアウト（ホストでも実行可）
 ├─ alt-ime.manifest         # PerMonitorV2 DPI manifest
@@ -64,6 +65,12 @@ GOOS=windows GOARCH=amd64 go build -ldflags "-H windowsgui -s -w" -o alt-ime-go.
 - **メニュー抑制:** 既定では空打ち候補の Alt down 時にタグ付き未割当 VK `0x07`、他キーを伴わない Alt up 時にタグ付き `VK_F24` を送る。
 - **二段配送:** Alt-up callback 復帰後に UI へ切替要求を送り、IME 送出直前に Alt 解放を確認する。
 - **対象競合防止:** 前面 HWND が変わった要求、または Alt が未解放の要求は破棄する。
+- **Enter送信ガード:** 対象アプリ（前面プロセスの exe 名が `enterGuardTargetExes` に一致）でのみ、
+  Enter 単独の down/up 対をブロックしてタグ付き Shift+Enter（改行）を注入し、Ctrl+Enter は
+  Ctrl 一時解放→Enter→Ctrl 復元の注入で素の Enter（送信）に変換する。Shift/Alt/Win を含む
+  chord と注入 Enter には介入しない。前面判定は `EVENT_SYSTEM_FOREGROUND` WinEvent の
+  キャッシュ + Enter down 時の同期解決フォールバック（`guardSyncResolve` で計測）。
+  トレイで個別トグル（`msgHookSetEnterGuard`）。
 - **IME:** 主経路は `VK_IME_ON/OFF` の絶対指定。`SendInput` の送出数を必ず検査する。
 - **IMM32:** 明示選択時だけ使用し、通常の `SendMessage` ではなく 100ms の `SendMessageTimeout` を使う。
 - **OSD:** 送出成功時だけ A/あ、送出失敗時は `!`。実 IME 状態を確認済みとは扱わない。
@@ -72,7 +79,11 @@ GOOS=windows GOARCH=amd64 go build -ldflags "-H windowsgui -s -w" -o alt-ime-go.
 ## 重要な落とし穴
 
 - `nCode < 0` / 非 `HC_ACTION` では `lParam` を参照しない。
-- フックは常に `CallNextHookEx` の戻り値を返し、物理 Alt をブロックしない。
+- フックは原則 `CallNextHookEx` の戻り値を返す。Alt は決してブロックしない。ブロックしてよいのは
+  Enter送信ガードが置換する Enter の down/up 対だけで、対応する up と auto-repeat も対で飲む。
+- IME 変換中の確定 Enter もガードが置換してしまう（他プロセスの変換中状態を確実に検出する公式 API
+  がない）。発動判定は `feedGuard` の `active` 算出 1 箇所に集約し、実機記録の結果を見て
+  変換中検出を後付けする。
 - 外部ツールの注入入力を一律無視しない。進行中の空打ちのキャンセル要因になり得る。
 - `LowLevelHooksTimeout` 超過時、Windows 7+ ではフックが通知なしに削除され得る。UI 処理をフックスレッドへ持ち込まない。
 - `SendInput` とウィンドウメッセージは UIPI の制約を受ける。送出成功と実 IME 状態を混同しない。

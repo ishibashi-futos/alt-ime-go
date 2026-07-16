@@ -3,6 +3,8 @@ package main
 // Compile-time configuration (FR-13/14/15) and the pure helpers built on it.
 // Everything here is Win32-free so it stays unit-testable on any host.
 
+import "strings"
+
 // imeControlMethod selects how IME switch requests are delivered (FR-14).
 // Exactly one path runs; there is no automatic fallback from one to the
 // other because a VK event that the IME silently ignored cannot be detected
@@ -49,7 +51,41 @@ const (
 	// callback (two QueryPerformanceCounter reads, no I/O). The maximum is
 	// reported via OutputDebugString when the hook stops. Debug builds only.
 	measureHookLatency = false
+
+	// enterGuardDefaultEnabled is the Enter guard state at startup; the tray
+	// menu toggles it at runtime (FR-20..23).
+	enterGuardDefaultEnabled = true
 )
+
+// ---- Enter guard targets (FR-20) ----
+
+// enterGuardTargetExes lists the executable basenames (lowercase) whose
+// foreground windows get the Enter guard: plain Enter becomes Shift+Enter
+// (newline) and Ctrl+Enter becomes a plain Enter (send).
+var enterGuardTargetExes = []string{
+	"m365copilot.exe",
+	"claude.exe",
+}
+
+// matchGuardTarget reports whether a full process image path names one of
+// the guard targets. Windows paths are compared by backslash-delimited
+// basename, case-insensitively.
+func matchGuardTarget(imagePath string) bool {
+	if imagePath == "" {
+		return false
+	}
+	base := imagePath
+	if i := strings.LastIndexByte(base, '\\'); i >= 0 {
+		base = base[i+1:]
+	}
+	base = strings.ToLower(base)
+	for _, exe := range enterGuardTargetExes {
+		if base == exe {
+			return true
+		}
+	}
+	return false
+}
 
 // ---- OSD tunables, defined at 96 DPI and scaled to the target monitor ----
 

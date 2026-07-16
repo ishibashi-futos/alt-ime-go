@@ -12,8 +12,9 @@ import "unsafe"
 const (
 	trayIconID = 1
 
-	cmdToggleEnabled = 1
-	cmdExit          = 2
+	cmdToggleEnabled    = 1
+	cmdExit             = 2
+	cmdToggleEnterGuard = 3
 )
 
 type trayIcon struct {
@@ -33,6 +34,7 @@ func newTrayIcon(owner, hinst uintptr) (*trayIcon, error) {
 		return nil, winError("CreatePopupMenu", 0)
 	}
 	if !appendMenu(menu, mfString, cmdToggleEnabled, "有効") ||
+		!appendMenu(menu, mfString, cmdToggleEnterGuard, "Enter送信ガード") ||
 		!appendMenu(menu, mfString, cmdExit, "終了") {
 		destroyMenu(menu)
 		return nil, winError("AppendMenuW", 0)
@@ -100,12 +102,9 @@ func (t *trayIcon) reRegister() {
 // showMenu runs the context menu at the anchor the shell provided and
 // returns the chosen command (0 = dismissed). TPM_RETURNCMD keeps the
 // dispatch here instead of WM_COMMAND round-trips.
-func (t *trayIcon) showMenu(x, y int32, enabled bool) int {
-	check := uint32(mfByCommand | mfUnchecked)
-	if enabled {
-		check = mfByCommand | mfChecked
-	}
-	checkMenuItem(t.menu, cmdToggleEnabled, check)
+func (t *trayIcon) showMenu(x, y int32, enabled, guardEnabled bool) int {
+	checkMenuItem(t.menu, cmdToggleEnabled, checkFlags(enabled))
+	checkMenuItem(t.menu, cmdToggleEnterGuard, checkFlags(guardEnabled))
 	// Required foreground dance: without it the menu will not dismiss when
 	// the user clicks elsewhere, and WM_NULL afterwards works around the
 	// matching quirk (KB135788).
@@ -116,6 +115,13 @@ func (t *trayIcon) showMenu(x, y int32, enabled bool) int {
 	nid := t.baseNID()
 	shellNotifyIcon(nimSetFocus, &nid)
 	return int(cmd)
+}
+
+func checkFlags(checked bool) uint32 {
+	if checked {
+		return mfByCommand | mfChecked
+	}
+	return mfByCommand | mfUnchecked
 }
 
 func (t *trayIcon) remove() {

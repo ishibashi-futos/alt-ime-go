@@ -100,6 +100,27 @@
 - [x] `GOOS=windows GOARCH=amd64 go build -ldflags "-H windowsgui -s -w" -o alt-ime-go.exe .` が成功
 - [x] exe に GUI subsystem、DPI manifest、multi-size icon が埋め込まれていることを確認（`debug/pe` 解析）
 
+## フェーズ 7: Enter送信ガード
+
+- [x] Win32 非依存の状態機械（`enterguard.go`）を `idle / swallow` + 修飾キー追跡で実装
+- [x] 遷移表全行・左右/両 Ctrl・auto-repeat・注入 Enter・resync のユニットテスト
+- [x] `hookProc` にブロック経路を新設（ガードが置換する Enter だけ `CallNextHookEx` を呼ばず非 0 を返す）
+- [x] タグ付き Shift+Enter 注入（改行）と Ctrl 一時解放→Enter→Ctrl 復元注入（送信）、挿入数検査と best-effort 復旧
+- [x] `EVENT_SYSTEM_FOREGROUND` WinEvent による前面 exe のガード対象キャッシュ
+      （フックスレッド専有、Enter down 時の同期解決フォールバックは `guardSyncResolve` で計測）
+- [x] `GetWindowThreadProcessId` / `OpenProcess` / `QueryFullProcessImageNameW` バインディングと exe 名照合（`matchGuardTarget`）
+- [x] トレイメニュー「Enter送信ガード」トグル（`msgHookSetEnterGuard`、既定 ON）
+- [x] 有効化・ガードトグル・セッション/電源復帰時に両状態機械を resync しキャッシュ再解決
+- [ ] 対象アプリ（M365 Copilot / Claude Desktop）で Enter→改行、Ctrl+Enter→送信を確認（実機）
+- [ ] Shift+Enter / Alt+Enter / Win+Enter が従来どおり動作することを確認（実機）
+- [ ] 非対象アプリ（メモ帳 / VS Code / ブラウザ）で一切介入しないことを確認（実機）
+- [ ] IME 変換中の確定 Enter の挙動を記録（CON-9、v1 既知課題）（実機）
+- [ ] Enter 長押しで stuck key・意図しない送信がないことを確認（実機）
+- [ ] Ctrl+Enter 後に Ctrl が論理押しっぱなしにならないことを確認（続く Ctrl+英字）（実機）
+- [ ] Alt+Tab 直後の即 Enter で対象判定が正しいこと、`guardSyncResolve` の頻度を DebugView で記録（実機）
+- [ ] トレイトグル境界（Enter 押下中のトグル含む）とロック/スリープ復帰直後の Enter を確認（実機）
+- [ ] Alt 空打ち・メニュー抑制への回帰がないこと、`measureHookLatency` の最大値が悪化しないことを確認（実機）
+
 ---
 
 ## Windows 実機のリリース判定
@@ -170,3 +191,5 @@
 - [ ] コード署名
 - [ ] UIAccess + 署名 + 安全なインストール形態の設計判断
 - [ ] Ctrl+Shift 方式（割り当て・優先順位・排他の仕様確定後）
+- [ ] Enter送信ガード: IME 変換中検出（実機記録の結果、問題があれば。候補ウィンドウ検出等のヒューリスティック）
+- [ ] Enter送信ガード: auto-repeat での改行連打対応の判断（v1 は repeat を飲むだけ）

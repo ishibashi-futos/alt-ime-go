@@ -21,11 +21,18 @@ const (
 	vkXButton2           = 0x06
 	vkMenuSuppressLegacy = 0x07 // unassigned VK for Win32-style menu masking
 	vkMenuSuppressDOM    = 0x87 // VK_F24: visible to Electron/Chromium and DOM
+	vkReturn             = 0x0D
 	vkShift              = 0x10
 	vkControl            = 0x11
 	vkMenu               = 0x12
 	vkImeOn              = 0x16
 	vkImeOff             = 0x1A
+	vkLWin               = 0x5B
+	vkRWin               = 0x5C
+	vkLShift             = 0xA0
+	vkRShift             = 0xA1
+	vkLControl           = 0xA2
+	vkRControl           = 0xA3
 	vkLMenu              = 0xA4
 	vkRMenu              = 0xA5
 )
@@ -47,9 +54,19 @@ const (
 
 // SendInput.
 const (
-	inputKeyboard  = 1
-	keyEventFKeyUp = 0x0002
+	inputKeyboard        = 1
+	keyEventFExtendedKey = 0x0001
+	keyEventFKeyUp       = 0x0002
 )
+
+// WinEvent hook (foreground tracking for the Enter guard).
+const (
+	eventSystemForeground = 0x0003
+	wineventOutOfContext  = 0x0000
+)
+
+// OpenProcess access right for QueryFullProcessImageNameW.
+const processQueryLimitedInformation = 0x1000
 
 // Window messages.
 const (
@@ -78,6 +95,7 @@ const (
 	msgHookSetEnabled     = wmApp + 17 // wParam: 0/1
 	msgHookReset          = wmApp + 18
 	msgHookStop           = wmApp + 19
+	msgHookSetEnterGuard  = wmApp + 20 // wParam: 0/1
 )
 
 // IMM32 / WM_IME_CONTROL.

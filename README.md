@@ -19,13 +19,19 @@
 | 送出失敗時 | 赤系の `!` OSD（成功表示は偽装しない） |
 | Alt+Tab 等の chord | 通常動作（Alt はブロックしない） |
 | 単独 Alt | 既定でメニューバーへのフォーカス移動を抑制（本家互換） |
-| トレイアイコン | 有効/無効切替・終了。マウスとキーボード両対応、Explorer 再起動後に自動復旧 |
+| 対象アプリでの Enter 単独 | Enter送信ガード: ブロックして Shift+Enter（改行）に置換。誤送信を防止 |
+| 対象アプリでの Ctrl+Enter | 素の Enter（送信）に変換。Shift/Alt/Win を含む chord は介入しない |
+| トレイアイコン | 有効/無効切替・Enter送信ガード切替・終了。マウスとキーボード両対応、Explorer 再起動後に自動復旧 |
 | 多重起動 | 同一セッション内の 2 個目は起動せず通知して終了 |
 
 - 「空打ち」= Alt を押した時点で他キーが押されておらず、保持中にも他キーを押さず、
   500ms 以内に離す操作。
 - OSD は「切替要求を入力ストリームへ挿入できた」ことの表示であり、
   **実際の IME 状態を確認した表示ではない**（TSF を含む実状態検証は行わない）。
+- Enter送信ガードの対象アプリは前面ウィンドウのプロセス exe 名で判定する
+  （既定: M365 Copilot / Claude Desktop。`tunables.go` の `enterGuardTargetExes`）。
+  **IME 変換中の確定 Enter も置換されてしまう既知の制約がある**（他プロセスの変換中状態を
+  確実に検出する公式 API がないため。実機検証の結果を見て変換中検出を追加予定）。
 
 ## 動作要件
 
@@ -70,6 +76,8 @@ GOOS=windows GOARCH=amd64 go build -ldflags "-H windowsgui -s -w" -o alt-ime-go.
 | `suppressAltMenuFocus` | true | 単独 Alt のメニュー抑制（Alt-down で VK `0x07`、clean Alt-up で `VK_F24` を注入） |
 | `imeControl` | `imeControlVK` | IME 制御方式。`imeControlIMM32` で IMM32 経路に切替（自動フォールバックなし） |
 | `imm32TimeoutMs` | 100 | IMM32 経路の `SendMessageTimeoutW` 期限 (ms) |
+| `enterGuardTargetExes` | `m365copilot.exe`, `claude.exe` | Enter送信ガードの対象 exe 名（basename、小文字） |
+| `enterGuardDefaultEnabled` | true | 起動時の Enter送信ガード有効状態（トレイで切替可能） |
 | `osdBase` ほか | — | OSD の寸法（96 DPI 基準）・色・表示/フェード時間 |
 
 ## アーキテクチャ概要
@@ -124,7 +132,10 @@ Windows 10/11 x64 実機で確認する。
 7. 2 個目の起動が「既に起動しています」で終了すること。
 8. 100%/150%/200% と混在 DPI で OSD の位置・サイズ・文字が正しいこと。
 9. スリープ復帰・ロック解除直後の最初の入力で誤切替しないこと。
-10. 終了後にフック・トレイアイコン・プロセスが残らないこと。
+10. Enter送信ガード: 対象アプリ（M365 Copilot / Claude Desktop）で Enter → 改行のみ、
+    Ctrl+Enter → 送信、Shift+Enter は従来どおり。非対象アプリでは一切介入しないこと。
+    IME 変換中の確定 Enter の挙動を記録すること（既知の制約）。
+11. 終了後にフック・トレイアイコン・プロセスが残らないこと。
 
 全チェックリストは [docs/todo.md](docs/todo.md) を参照。
 

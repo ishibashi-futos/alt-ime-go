@@ -44,9 +44,11 @@ type app struct {
 	taskbarCreated uint32
 	sessionNotify  bool
 
-	// enabled mirrors the hook thread's state for menu display and request
-	// gating; the hook side is updated via msgHookSetEnabled.
+	// enabled / guardEnabled mirror the hook thread's state for menu display
+	// and request gating; the hook side is updated via msgHookSetEnabled and
+	// msgHookSetEnterGuard.
 	enabled      bool
+	guardEnabled bool
 	hookRunning  bool
 	shuttingDown bool
 	shutdownDone bool
@@ -102,7 +104,7 @@ func runApp() error {
 	}
 	undo = append(undo, func() { closeMutex(mutex) })
 
-	a := &app{mutex: mutex, enabled: true}
+	a := &app{mutex: mutex, enabled: true, guardEnabled: enterGuardDefaultEnabled}
 	ui = a
 	undo = append(undo, func() { ui = nil })
 
@@ -290,9 +292,11 @@ func (a *app) onTrayEvent(wParam, lParam uintptr) {
 	case wmContextMenu, ninSelect, ninKeySelect:
 		x := int32(int16(wParam & 0xFFFF))
 		y := int32(int16((wParam >> 16) & 0xFFFF))
-		switch a.tray.showMenu(x, y, a.enabled) {
+		switch a.tray.showMenu(x, y, a.enabled, a.guardEnabled) {
 		case cmdToggleEnabled:
 			a.toggleEnabled()
+		case cmdToggleEnterGuard:
+			a.toggleEnterGuard()
 		case cmdExit:
 			a.beginShutdown()
 		}
@@ -304,6 +308,13 @@ func (a *app) toggleEnabled() {
 	a.dropPending() // queued/pending requests are re-gated by a.enabled
 	if a.hookRunning && !postThreadMessage(hook.tid, msgHookSetEnabled, boolToUintptr(a.enabled), 0) {
 		debugf("PostThreadMessage(msgHookSetEnabled) failed")
+	}
+}
+
+func (a *app) toggleEnterGuard() {
+	a.guardEnabled = !a.guardEnabled
+	if a.hookRunning && !postThreadMessage(hook.tid, msgHookSetEnterGuard, boolToUintptr(a.guardEnabled), 0) {
+		debugf("PostThreadMessage(msgHookSetEnterGuard) failed")
 	}
 }
 
