@@ -1,6 +1,6 @@
 //go:build windows
 
-package main
+package app
 
 // Process lifecycle and the UI thread: controller window, switch-request
 // validation, tray interaction, session/power notifications, and ordered
@@ -12,6 +12,10 @@ import (
 	"os"
 	"runtime"
 	"syscall"
+
+	"github.com/ishibashi-futos/alt-ime-go/internal/config"
+	"github.com/ishibashi-futos/alt-ime-go/internal/hookstate"
+	"github.com/ishibashi-futos/alt-ime-go/internal/win32"
 )
 
 const (
@@ -27,7 +31,7 @@ const (
 )
 
 // pendingSwitch holds a validated-but-for-Alt-release switch request while
-// the UI re-checks the trigger key for at most switchRetryDeadlineMs.
+// the UI re-checks the trigger key for at most config.SwitchRetryDeadlineMs.
 type pendingSwitch struct {
 	active   bool
 	open     bool
@@ -60,19 +64,19 @@ var ui *app
 
 var ctrlWndProcCB = syscall.NewCallback(ctrlWndProc)
 
-func main() {
+// Main owns the UI thread for the whole process life. It must run on the
+// main goroutine so LockOSThread pins it to the initial OS thread.
+func Main() {
 	runtime.LockOSThread()
-	if err := loadWin32(); err != nil {
-		// Even MessageBoxW may be unavailable here; there is no better
-		// channel in a GUI-subsystem process.
-		if procMessageBoxW.addr != 0 {
-			messageBox(0, "起動に失敗しました:\n"+err.Error(), appTitle, mbOK|mbIconError)
-		}
+	if err := win32.Load(); err != nil {
+		// MessageBox degrades to a no-op when user32 could not be resolved;
+		// there is no better channel in a GUI-subsystem process.
+		win32.MessageBox(0, "起動に失敗しました:\n"+err.Error(), appTitle, win32.MbOK|win32.MbIconError)
 		os.Exit(1)
 	}
 	if err := runApp(); err != nil {
-		debugf("fatal: %v", err)
-		messageBox(0, "alt-ime を継続できません:\n"+err.Error(), appTitle, mbOK|mbIconError)
+		win32.Debugf("fatal: %v", err)
+		win32.MessageBox(0, "alt-ime を継続できません:\n"+err.Error(), appTitle, win32.MbOK|win32.MbIconError)
 		os.Exit(1)
 	}
 }
@@ -80,7 +84,7 @@ func main() {
 func runApp() error {
 	// DPI awareness before the first HWND. The embedded manifest is the
 	// primary mechanism; this call only matters for manifest-less builds.
-	setPerMonitorV2()
+	win32.SetPerMonitorV2()
 
 	// Everything acquired so far is torn down in reverse order when a later
 	// initialization step fails (architecture §3.3). Once the message loop
@@ -93,36 +97,36 @@ func runApp() error {
 		return err
 	}
 
-	mutex, errno := createMutex(mutexName)
+	mutex, errno := win32.CreateMutex(mutexName)
 	if mutex == 0 {
-		return winError("CreateMutexW", errno)
+		return win32.WinError("CreateMutexW", errno)
 	}
-	if errno == errorAlreadyExists {
+	if errno == win32.ErrorAlreadyExists {
 		syscall.CloseHandle(mutex)
-		messageBox(0, "alt-ime は既に起動しています。", appTitle, mbOK|mbIconInformation)
+		win32.MessageBox(0, "alt-ime は既に起動しています。", appTitle, win32.MbOK|win32.MbIconInformation)
 		return nil
 	}
-	undo = append(undo, func() { closeMutex(mutex) })
+	undo = append(undo, func() { win32.CloseMutex(mutex) })
 
-	a := &app{mutex: mutex, enabled: true, guardEnabled: enterGuardDefaultEnabled}
+	a := &app{mutex: mutex, enabled: true, guardEnabled: config.EnterGuardDefaultEnabled}
 	ui = a
 	undo = append(undo, func() { ui = nil })
 
-	hinst := getModuleHandle()
-	a.taskbarCreated = registerWindowMessage("TaskbarCreated")
+	hinst := win32.GetModuleHandle()
+	a.taskbarCreated = win32.RegisterWindowMessage("TaskbarCreated")
 	if a.taskbarCreated == 0 {
-		debugf("RegisterWindowMessageW(TaskbarCreated) failed; tray will not survive Explorer restarts")
+		win32.Debugf("RegisterWindowMessageW(TaskbarCreated) failed; tray will not survive Explorer restarts")
 	}
 
-	if err := registerClass(ctrlClassName, ctrlWndProcCB, hinst); err != nil {
+	if err := win32.RegisterClass(ctrlClassName, ctrlWndProcCB, hinst); err != nil {
 		return fail(err)
 	}
-	ctrl, cerr := createWindow(0, ctrlClassName, appTitle, wsOverlapped, 0, 0, 0, 0, 0, hinst)
+	ctrl, cerr := win32.CreateWindow(0, ctrlClassName, appTitle, win32.WsOverlapped, 0, 0, 0, 0, 0, hinst)
 	if ctrl == 0 {
-		return fail(winError("CreateWindowExW(controller)", cerr))
+		return fail(win32.WinError("CreateWindowExW(controller)", cerr))
 	}
 	a.ctrl = ctrl
-	undo = append(undo, func() { destroyWindow(ctrl) })
+	undo = append(undo, func() { win32.DestroyWindow(ctrl) })
 
 	osd, err := newOsdWindow(hinst)
 	if err != nil {
@@ -138,10 +142,10 @@ func runApp() error {
 	a.tray = tray
 	undo = append(undo, tray.destroy)
 
-	if a.sessionNotify = wtsRegisterSessionNotification(ctrl); !a.sessionNotify {
-		debugf("WTSRegisterSessionNotification failed; no session-resume resync")
+	if a.sessionNotify = win32.WtsRegisterSessionNotification(ctrl); !a.sessionNotify {
+		win32.Debugf("WTSRegisterSessionNotification failed; no session-resume resync")
 	} else {
-		undo = append(undo, func() { wtsUnRegisterSessionNotification(ctrl) })
+		undo = append(undo, func() { win32.WtsUnRegisterSessionNotification(ctrl) })
 	}
 
 	hook = newHookThread(ctrl)
@@ -155,9 +159,9 @@ func runApp() error {
 	// From here on, shutdown is owned by beginShutdown/finishShutdown.
 	undo = nil
 
-	var msg msgStruct
+	var msg win32.MsgStruct
 	for {
-		switch r := getMessage(&msg); r {
+		switch r := win32.GetMessage(&msg); r {
 		case 0:
 			return nil
 		case -1:
@@ -165,8 +169,8 @@ func runApp() error {
 			// resources cannot be freed reliably at this point.
 			return errors.New("GetMessage が -1 を返しました (UI スレッド異常)")
 		default:
-			translateMessage(&msg)
-			dispatchMessage(&msg)
+			win32.TranslateMessage(&msg)
+			win32.DispatchMessage(&msg)
 		}
 	}
 }
@@ -174,7 +178,7 @@ func runApp() error {
 func ctrlWndProc(hwnd, msg, wParam, lParam uintptr) uintptr {
 	a := ui
 	if a == nil || a.ctrl != hwnd {
-		return defWindowProc(hwnd, msg, wParam, lParam)
+		return win32.DefWindowProc(hwnd, msg, wParam, lParam)
 	}
 	switch uint32(msg) {
 	case msgSwitch:
@@ -189,20 +193,20 @@ func ctrlWndProc(hwnd, msg, wParam, lParam uintptr) uintptr {
 	case msgHookStopped:
 		a.onHookStopped()
 		return 0
-	case wmTimer:
+	case win32.WmTimer:
 		a.onTimer(wParam)
 		return 0
-	case wmWtsSessionChange:
-		if wParam == wtsSessionLock || wParam == wtsSessionUnlock {
+	case win32.WmWtsSessionChange:
+		if wParam == win32.WtsSessionLock || wParam == win32.WtsSessionUnlock {
 			a.postHookReset()
 		}
 		return 0
-	case wmPowerBroadcast:
-		if wParam == pbtApmResumeAutomatic || wParam == pbtApmResumeSuspend {
+	case win32.WmPowerBroadcast:
+		if wParam == win32.PbtApmResumeAutomatic || wParam == win32.PbtApmResumeSuspend {
 			a.postHookReset()
 		}
 		return 1 // TRUE
-	case wmClose:
+	case win32.WmClose:
 		a.beginShutdown()
 		return 0
 	default:
@@ -213,7 +217,7 @@ func ctrlWndProc(hwnd, msg, wParam, lParam uintptr) uintptr {
 			return 0
 		}
 	}
-	return defWindowProc(hwnd, msg, wParam, lParam)
+	return win32.DefWindowProc(hwnd, msg, wParam, lParam)
 }
 
 // onSwitchRequest is the UI half of the two-stage dispatch. Every condition
@@ -224,12 +228,12 @@ func (a *app) onSwitchRequest(wParam, lParam uintptr) {
 	if a.shuttingDown || !a.enabled {
 		return
 	}
-	open, vk := unpackSwitchWParam(wParam)
+	open, vk := hookstate.UnpackSwitchWParam(wParam)
 	target := lParam
-	if target == 0 || !isWindow(target) || getForegroundWindow() != target {
+	if target == 0 || !win32.IsWindow(target) || win32.GetForegroundWindow() != target {
 		return
 	}
-	if getAsyncKeyStateDown(vk) {
+	if win32.GetAsyncKeyStateDown(vk) {
 		// The hook saw the Alt-up before the async state updated. Re-check
 		// briefly on a timer instead of sending Alt+IME-key by accident.
 		a.pending = pendingSwitch{
@@ -237,10 +241,10 @@ func (a *app) onSwitchRequest(wParam, lParam uintptr) {
 			open:     open,
 			vk:       vk,
 			target:   target,
-			deadline: getTickCount64() + switchRetryDeadlineMs,
+			deadline: win32.GetTickCount64() + config.SwitchRetryDeadlineMs,
 		}
-		if !setTimer(a.ctrl, timerIDRetrySwitch, switchRetryIntervalMs) {
-			debugf("SetTimer(retry) failed; discarding switch request")
+		if !win32.SetTimer(a.ctrl, timerIDRetrySwitch, config.SwitchRetryIntervalMs) {
+			win32.Debugf("SetTimer(retry) failed; discarding switch request")
 			a.pending = pendingSwitch{}
 		}
 		return
@@ -254,16 +258,16 @@ func (a *app) onRetryTimer() {
 		a.dropPending()
 		return
 	}
-	if !isWindow(p.target) || getForegroundWindow() != p.target {
+	if !win32.IsWindow(p.target) || win32.GetForegroundWindow() != p.target {
 		a.dropPending() // target changed while waiting: discard, no OSD
 		return
 	}
-	if !getAsyncKeyStateDown(p.vk) {
+	if !win32.GetAsyncKeyStateDown(p.vk) {
 		a.dropPending()
 		a.doSwitch(p.open, p.target)
 		return
 	}
-	if getTickCount64() >= p.deadline {
+	if win32.GetTickCount64() >= p.deadline {
 		a.dropPending() // Alt still held past the deadline: not a tap we honor
 	}
 }
@@ -272,7 +276,7 @@ func (a *app) dropPending() {
 	if a.pending.active {
 		a.pending = pendingSwitch{}
 	}
-	killTimer(a.ctrl, timerIDRetrySwitch)
+	win32.KillTimer(a.ctrl, timerIDRetrySwitch)
 }
 
 func (a *app) doSwitch(open bool, target uintptr) {
@@ -299,10 +303,10 @@ func (a *app) onGuardEnter(wParam, lParam uintptr) {
 	if a.shuttingDown || !a.enabled || !a.guardEnabled {
 		return
 	}
-	send, composing := unpackGuardWParam(wParam)
+	send, composing := hookstate.UnpackGuardWParam(wParam)
 	target := lParam
-	if target == 0 || !isWindow(target) || getForegroundWindow() != target {
-		debugf("guard: replacement dropped (foreground changed)")
+	if target == 0 || !win32.IsWindow(target) || win32.GetForegroundWindow() != target {
+		win32.Debugf("guard: replacement dropped (foreground changed)")
 		return
 	}
 	plain := send
@@ -316,37 +320,37 @@ func (a *app) onGuardEnter(wParam, lParam uintptr) {
 		// fails open).
 		plain = imeOpen || !imeOK
 	}
-	if guardTrace {
-		debugf("guard: enter send=%t composing=%t imeOpen=%t imeOK=%t -> plain=%t", send, composing, imeOpen, imeOK, plain)
+	if config.GuardTrace {
+		win32.Debugf("guard: enter send=%t composing=%t imeOpen=%t imeOK=%t -> plain=%t", send, composing, imeOpen, imeOK, plain)
 	}
 	if plain {
 		a.deliverPlainEnter()
 		return
 	}
-	if n, errno := sendShiftEnter(); n != 4 {
-		debugf("guard: Shift+Enter SendInput inserted %d/4, errno=%d", n, errno)
+	if n, errno := win32.SendShiftEnter(); n != 4 {
+		win32.Debugf("guard: Shift+Enter SendInput inserted %d/4, errno=%d", n, errno)
 		// A partial insertion can leave the injected Shift logically down;
 		// an unmatched key-up is harmless.
-		sendKeyUp(vkLShift)
+		win32.SendKeyUp(win32.VkLShift)
 	}
 }
 
 // deliverPlainEnter injects a tagged plain Enter, temporarily releasing
 // whichever physical Ctrl side is still down so the target does not observe
 // Ctrl+Enter. When the user already released Ctrl by the time this runs,
-// sendEnterBypassingCtrl degrades to a bare Enter tap.
+// win32.SendEnterBypassingCtrl degrades to a bare Enter tap.
 func (a *app) deliverPlainEnter() {
-	lctrl := getAsyncKeyStateDown(vkLControl)
-	rctrl := getAsyncKeyStateDown(vkRControl)
-	if want, got, errno := sendEnterBypassingCtrl(lctrl, rctrl); got != want {
-		debugf("guard: Ctrl-bypass Enter SendInput inserted %d/%d, errno=%d", got, want, errno)
+	lctrl := win32.GetAsyncKeyStateDown(win32.VkLControl)
+	rctrl := win32.GetAsyncKeyStateDown(win32.VkRControl)
+	if want, got, errno := win32.SendEnterBypassingCtrl(lctrl, rctrl); got != want {
+		win32.Debugf("guard: Ctrl-bypass Enter SendInput inserted %d/%d, errno=%d", got, want, errno)
 		// The physically held side(s) must end logically down again; a
 		// duplicate key-down over an already-down key is harmless.
 		if lctrl {
-			sendKeyDown(vkLControl)
+			win32.SendKeyDown(win32.VkLControl)
 		}
 		if rctrl {
-			sendKeyDown(vkRControl)
+			win32.SendKeyDown(win32.VkRControl)
 		}
 	}
 }
@@ -356,7 +360,7 @@ func (a *app) onTrayEvent(wParam, lParam uintptr) {
 		return
 	}
 	switch uint32(lParam & 0xFFFF) { // NOTIFYICON_VERSION_4: LOWORD(lParam)
-	case wmContextMenu, ninSelect, ninKeySelect:
+	case win32.WmContextMenu, win32.NinSelect, win32.NinKeySelect:
 		x := int32(int16(wParam & 0xFFFF))
 		y := int32(int16((wParam >> 16) & 0xFFFF))
 		switch a.tray.showMenu(x, y, a.enabled, a.guardEnabled) {
@@ -373,21 +377,21 @@ func (a *app) onTrayEvent(wParam, lParam uintptr) {
 func (a *app) toggleEnabled() {
 	a.enabled = !a.enabled
 	a.dropPending() // queued/pending requests are re-gated by a.enabled
-	if a.hookRunning && !postThreadMessage(hook.tid, msgHookSetEnabled, boolToUintptr(a.enabled), 0) {
-		debugf("PostThreadMessage(msgHookSetEnabled) failed")
+	if a.hookRunning && !win32.PostThreadMessage(hook.tid, msgHookSetEnabled, win32.BoolToUintptr(a.enabled), 0) {
+		win32.Debugf("PostThreadMessage(msgHookSetEnabled) failed")
 	}
 }
 
 func (a *app) toggleEnterGuard() {
 	a.guardEnabled = !a.guardEnabled
-	if a.hookRunning && !postThreadMessage(hook.tid, msgHookSetEnterGuard, boolToUintptr(a.guardEnabled), 0) {
-		debugf("PostThreadMessage(msgHookSetEnterGuard) failed")
+	if a.hookRunning && !win32.PostThreadMessage(hook.tid, msgHookSetEnterGuard, win32.BoolToUintptr(a.guardEnabled), 0) {
+		win32.Debugf("PostThreadMessage(msgHookSetEnterGuard) failed")
 	}
 }
 
 func (a *app) postHookReset() {
-	if a.hookRunning && !postThreadMessage(hook.tid, msgHookReset, 0, 0) {
-		debugf("PostThreadMessage(msgHookReset) failed")
+	if a.hookRunning && !win32.PostThreadMessage(hook.tid, msgHookReset, 0, 0) {
+		win32.Debugf("PostThreadMessage(msgHookReset) failed")
 	}
 }
 
@@ -400,11 +404,11 @@ func (a *app) beginShutdown() {
 	}
 	a.shuttingDown = true
 	a.dropPending()
-	if a.hookRunning && postThreadMessage(hook.tid, msgHookStop, 0, 0) {
-		if setTimer(a.ctrl, timerIDShutdownFallback, shutdownFallbackMs) {
+	if a.hookRunning && win32.PostThreadMessage(hook.tid, msgHookStop, 0, 0) {
+		if win32.SetTimer(a.ctrl, timerIDShutdownFallback, config.ShutdownFallbackMs) {
 			return
 		}
-		debugf("SetTimer(shutdown fallback) failed; finishing immediately")
+		win32.Debugf("SetTimer(shutdown fallback) failed; finishing immediately")
 	}
 	a.finishShutdown()
 }
@@ -415,8 +419,8 @@ func (a *app) onHookStopped() {
 		// The hook loop died without being asked (broken GetMessage): the
 		// core feature is gone, so surface it and exit cleanly.
 		a.shuttingDown = true
-		debugf("hook thread stopped unexpectedly; exiting")
-		messageBox(a.ctrl, "キーボードフックが停止したため終了します。", appTitle, mbOK|mbIconError)
+		win32.Debugf("hook thread stopped unexpectedly; exiting")
+		win32.MessageBox(a.ctrl, "キーボードフックが停止したため終了します。", appTitle, win32.MbOK|win32.MbIconError)
 	}
 	a.finishShutdown()
 }
@@ -426,9 +430,9 @@ func (a *app) onTimer(id uintptr) {
 	case timerIDRetrySwitch:
 		a.onRetryTimer()
 	case timerIDShutdownFallback:
-		killTimer(a.ctrl, timerIDShutdownFallback)
+		win32.KillTimer(a.ctrl, timerIDShutdownFallback)
 		if !a.shutdownDone {
-			debugf("hook thread did not confirm stop within %dms", shutdownFallbackMs)
+			win32.Debugf("hook thread did not confirm stop within %dms", config.ShutdownFallbackMs)
 			a.finishShutdown()
 		}
 	}
@@ -447,19 +451,19 @@ func (a *app) finishShutdown() {
 		a.tray.destroy()
 	}
 	a.dropPending()
-	killTimer(a.ctrl, timerIDShutdownFallback)
+	win32.KillTimer(a.ctrl, timerIDShutdownFallback)
 	if a.osd != nil {
 		a.osd.destroy()
 	}
 	if a.sessionNotify {
-		wtsUnRegisterSessionNotification(a.ctrl)
+		win32.WtsUnRegisterSessionNotification(a.ctrl)
 		a.sessionNotify = false
 	}
 	if a.ctrl != 0 {
-		destroyWindow(a.ctrl)
+		win32.DestroyWindow(a.ctrl)
 		a.ctrl = 0
 	}
-	closeMutex(a.mutex)
+	win32.CloseMutex(a.mutex)
 	a.mutex = 0
-	postQuitMessage(0)
+	win32.PostQuitMessage(0)
 }

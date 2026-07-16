@@ -1,13 +1,14 @@
-//go:build ignore
-
-// mkrsrc.go generates rsrc_windows_amd64.syso: a COFF object whose .rsrc
-// section embeds the PerMonitorV2 manifest and the multi-size application
-// icon. The Go linker includes *_windows_amd64.syso files in the PE image
-// automatically, so no third-party resource compiler is required.
+// mkrsrc generates cmd/alt-ime-go/rsrc_windows_amd64.syso: a COFF object
+// whose .rsrc section embeds the PerMonitorV2 manifest and the multi-size
+// application icon. The Go linker includes *_windows_amd64.syso files from
+// the main package directory in the PE image automatically, so no
+// third-party resource compiler is required.
 //
-// Regenerate after editing alt-ime.manifest or assets/alt-ime-icon.ico:
+// Regenerate after editing cmd/alt-ime-go/alt-ime.manifest or
+// assets/alt-ime-icon.ico (from the repository root, because the paths are
+// root-relative):
 //
-//	go run mkrsrc.go
+//	go run ./tools/mkrsrc
 package main
 
 import (
@@ -20,9 +21,9 @@ import (
 )
 
 const (
-	manifestFile = "alt-ime.manifest"
+	manifestFile = "cmd/alt-ime-go/alt-ime.manifest"
 	iconFile     = "assets/alt-ime-icon.ico"
-	sysoFile     = "rsrc_windows_amd64.syso"
+	sysoFile     = "cmd/alt-ime-go/rsrc_windows_amd64.syso"
 
 	imageFileMachineAMD64 = 0x8664
 	imageRelAMD64Addr32NB = 0x0003 // 32-bit address without image base (RVA)

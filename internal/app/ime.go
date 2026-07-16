@@ -1,14 +1,19 @@
 //go:build windows
 
-package main
+package app
 
 // IME switch delivery (UI thread only). setIME reports whether the switch
 // request was successfully handed to the system — "inserted", not "the IME
 // really changed state". The OSD layer must show the normal indicator only
 // for true results and must never fake success (design decision 6).
 
+import (
+	"github.com/ishibashi-futos/alt-ime-go/internal/config"
+	"github.com/ishibashi-futos/alt-ime-go/internal/win32"
+)
+
 func setIME(open bool, target uintptr) bool {
-	if imeControl == imeControlIMM32 {
+	if config.ImeControl == config.ImeControlIMM32 {
 		return setIMEByIMM32(open, target)
 	}
 	return setIMEByVK(open)
@@ -18,17 +23,17 @@ func setIME(open bool, target uintptr) bool {
 // absolute keys (not a toggle) are honored by Microsoft IME on Windows 10
 // 1903+ per the keyboard-japan-ime design guidance.
 func setIMEByVK(open bool) bool {
-	vk := uint16(vkImeOff)
+	vk := uint16(win32.VkImeOff)
 	name := "VK_IME_OFF"
 	if open {
-		vk = uint16(vkImeOn)
+		vk = uint16(win32.VkImeOn)
 		name = "VK_IME_ON"
 	}
-	n, errno := sendKeyPair(vk)
+	n, errno := win32.SendKeyPair(vk)
 	if n != 2 {
 		// UIPI rejections surface here as a short insert count; the exact
 		// cause is not distinguishable from the return value alone.
-		debugf("SendInput(%s): inserted %d/2, errno=%d", name, n, errno)
+		win32.Debugf("SendInput(%s): inserted %d/2, errno=%d", name, n, errno)
 		return false
 	}
 	return true
@@ -45,18 +50,18 @@ func setIMEByVK(open bool) bool {
 // deliberately not a universal "real IME state" probe (CON-5 still holds
 // for the OSD).
 func queryImeOpen(target uintptr) (open, ok bool) {
-	focus := guiFocusWindow(0) // 0 = foreground thread
+	focus := win32.GuiFocusWindow(0) // 0 = foreground thread
 	if focus == 0 {
-		focus = guiFocusWindow(windowThreadId(target))
+		focus = win32.GuiFocusWindow(win32.WindowThreadId(target))
 	}
 	if focus == 0 {
 		focus = target
 	}
-	imeWnd := immGetDefaultIMEWnd(focus)
+	imeWnd := win32.ImmGetDefaultIMEWnd(focus)
 	if imeWnd == 0 {
 		return false, false
 	}
-	status, ok, _ := sendMessageTimeout(imeWnd, wmImeControl, imcGetOpenStatus, 0, smtoAbortIfHung|smtoBlock, imm32TimeoutMs)
+	status, ok, _ := win32.SendMessageTimeout(imeWnd, win32.WmImeControl, win32.ImcGetOpenStatus, 0, win32.SmtoAbortIfHung|win32.SmtoBlock, config.Imm32TimeoutMs)
 	return status != 0, ok
 }
 
@@ -64,15 +69,15 @@ func queryImeOpen(target uintptr) (open, ok bool) {
 // window with WM_IME_CONTROL/IMC_SETOPENSTATUS under a hard deadline.
 // A plain SendMessage (unbounded wait on a foreign window) is never used.
 func setIMEByIMM32(open bool, target uintptr) bool {
-	imeWnd := immGetDefaultIMEWnd(target)
+	imeWnd := win32.ImmGetDefaultIMEWnd(target)
 	if imeWnd == 0 {
-		debugf("ImmGetDefaultIMEWnd(%#x) returned NULL", target)
+		win32.Debugf("ImmGetDefaultIMEWnd(%#x) returned NULL", target)
 		return false
 	}
-	_, ok, errno := sendMessageTimeout(imeWnd, wmImeControl, imcSetOpenStatus, boolToUintptr(open), smtoAbortIfHung|smtoBlock, imm32TimeoutMs)
+	_, ok, errno := win32.SendMessageTimeout(imeWnd, win32.WmImeControl, win32.ImcSetOpenStatus, win32.BoolToUintptr(open), win32.SmtoAbortIfHung|win32.SmtoBlock, config.Imm32TimeoutMs)
 	if !ok {
 		// Timeout, hung target, or UIPI denial all land here.
-		debugf("SendMessageTimeoutW(IMC_SETOPENSTATUS) failed, errno=%d", errno)
+		win32.Debugf("SendMessageTimeoutW(IMC_SETOPENSTATUS) failed, errno=%d", errno)
 		return false
 	}
 	return true

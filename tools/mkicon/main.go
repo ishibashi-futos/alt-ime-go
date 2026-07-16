@@ -1,11 +1,10 @@
-//go:build ignore
-
-// mkicon.go generates the project icon in SVG, PNG, and multi-size ICO
+// mkicon generates the project icon in SVG, PNG, and multi-size ICO
 // formats using only the Go standard library.
 //
-// Regenerate after changing the geometry or palette below:
+// Regenerate after changing the geometry or palette below (from the
+// repository root, because the output paths are root-relative):
 //
-//	go run mkicon.go
+//	go run ./tools/mkicon
 package main
 
 import (

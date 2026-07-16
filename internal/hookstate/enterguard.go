@@ -1,4 +1,6 @@
-package main
+package hookstate
+
+import "github.com/ishibashi-futos/alt-ime-go/internal/win32"
 
 // Enter guard state machine. In guard-target applications a plain Enter is
 // blocked and replaced with Shift+Enter (newline) and Ctrl+Enter is blocked
@@ -20,23 +22,23 @@ const (
 	guardSwallow
 )
 
-// guardAction is what the hook layer must do after feeding one event.
-type guardAction struct {
-	// block: consume this event instead of passing it down the hook chain.
-	block bool
-	// dispatch: a guarded Enter was consumed; forward a replacement request
+// GuardAction is what the hook layer must do after feeding one event.
+type GuardAction struct {
+	// Block: consume this event instead of passing it down the hook chain.
+	Block bool
+	// Dispatch: a guarded Enter was consumed; forward a replacement request
 	// to the UI thread carrying the two fields below.
-	dispatch bool
-	// send: Ctrl (and no other modifier) was held — the user asked to send.
-	send bool
-	// composing: an IME composition is believed to be in progress (CON-9
+	Dispatch bool
+	// Send: Ctrl (and no other modifier) was held — the user asked to send.
+	Send bool
+	// Composing: an IME composition is believed to be in progress (CON-9
 	// heuristic): a composition-starting key was seen after the last event
 	// known to commit or cancel one. The UI thread combines this with the
 	// target's actual IME open status before overriding the replacement.
-	composing bool
+	Composing bool
 }
 
-type guardMachine struct {
+type GuardMachine struct {
 	phase guardPhase
 	// mods tracks the non-self-injected modifier keys currently down,
 	// indexed by VK. Only the eight side-specific modifier codes are ever
@@ -51,36 +53,36 @@ type guardMachine struct {
 	composing bool
 }
 
-func newGuardMachine() *guardMachine {
-	return &guardMachine{}
+func NewGuardMachine() *GuardMachine {
+	return &GuardMachine{}
 }
 
 // isGuardModifier reports whether vk is one of the side-specific modifier
 // codes the guard tracks. Generic VK_SHIFT/VK_CONTROL/VK_MENU must be
-// normalized before feeding (normalizeAltVK / normalizeModVK).
+// normalized before feeding (NormalizeAltVK / NormalizeModVK).
 func isGuardModifier(vk uint32) bool {
 	switch vk {
-	case vkLShift, vkRShift, vkLControl, vkRControl, vkLMenu, vkRMenu, vkLWin, vkRWin:
+	case win32.VkLShift, win32.VkRShift, win32.VkLControl, win32.VkRControl, win32.VkLMenu, win32.VkRMenu, win32.VkLWin, win32.VkRWin:
 		return true
 	}
 	return false
 }
 
-// normalizeModVK converts generic VK_SHIFT/VK_CONTROL events into the
+// NormalizeModVK converts generic VK_SHIFT/VK_CONTROL events into the
 // side-specific codes the guard tracks. Physical events already arrive
 // side-specific from the low-level hook; generic codes appear only in
 // injected input. Right Ctrl is an extended key; Shift carries no side
 // information in the flags, so the left code stands in for either side
 // (the guard only ever asks "is any Shift down").
-func normalizeModVK(vk uint32, extended bool) uint32 {
+func NormalizeModVK(vk uint32, extended bool) uint32 {
 	switch vk {
-	case vkShift:
-		return vkLShift
-	case vkControl:
+	case win32.VkShift:
+		return win32.VkLShift
+	case win32.VkControl:
 		if extended {
-			return vkRControl
+			return win32.VkRControl
 		}
-		return vkLControl
+		return win32.VkLControl
 	}
 	return vk
 }
@@ -111,7 +113,7 @@ func isCompositionStarter(vk uint32) bool {
 // any pending text before switching).
 func endsComposition(vk uint32) bool {
 	switch vk {
-	case vkEscape, vkKana, vkKanji, vkImeOn, vkImeOff, vkOemAuto, vkOemEnlw:
+	case win32.VkEscape, win32.VkKana, win32.VkKanji, win32.VkImeOn, win32.VkImeOff, win32.VkOemAuto, win32.VkOemEnlw:
 		return true
 	}
 	return false
@@ -122,7 +124,7 @@ func endsComposition(vk uint32) bool {
 // session unlock, power resume) with the keys the OS currently reports as
 // down. A press swallowed by the resync leaves an orphan Enter up, which
 // passes through harmlessly because idle ignores ups.
-func (m *guardMachine) resync(down []uint32) {
+func (m *GuardMachine) Resync(down []uint32) {
 	m.mods = [256]bool{}
 	for _, vk := range down {
 		if vk < 256 && isGuardModifier(vk) {
@@ -136,11 +138,11 @@ func (m *guardMachine) resync(down []uint32) {
 // clearComposing marks any believed composition as ended. The hook layer
 // calls it when the foreground window changes, because losing focus commits
 // or cancels a composition.
-func (m *guardMachine) clearComposing() {
+func (m *GuardMachine) ClearComposing() {
 	m.composing = false
 }
 
-func (m *guardMachine) anyDown(vks ...uint32) bool {
+func (m *GuardMachine) anyDown(vks ...uint32) bool {
 	for _, vk := range vks {
 		if m.mods[vk] {
 			return true
@@ -152,22 +154,22 @@ func (m *guardMachine) anyDown(vks ...uint32) bool {
 // feed consumes one keyboard transition and reports the required action.
 // active is evaluated by the hook layer only for Enter events: guard
 // enabled and the foreground window is a guard target.
-func (m *guardMachine) feed(ev keyEvent, active bool) guardAction {
-	var act guardAction
-	if ev.vk == 0 || ev.vk >= 256 {
+func (m *GuardMachine) Feed(ev KeyEvent, active bool) GuardAction {
+	var act GuardAction
+	if ev.VK == 0 || ev.VK >= 256 {
 		return act
 	}
-	if isGuardModifier(ev.vk) {
-		m.mods[ev.vk] = ev.down
+	if isGuardModifier(ev.VK) {
+		m.mods[ev.VK] = ev.Down
 		return act
 	}
-	if ev.vk != vkReturn {
-		if ev.down {
+	if ev.VK != win32.VkReturn {
+		if ev.Down {
 			// Injected keys from other processes reach the target too, so
 			// they move the composition belief exactly like physical ones.
-			if isCompositionStarter(ev.vk) {
+			if isCompositionStarter(ev.VK) {
 				m.composing = true
-			} else if endsComposition(ev.vk) {
+			} else if endsComposition(ev.VK) {
 				m.composing = false
 			}
 		}
@@ -176,30 +178,30 @@ func (m *guardMachine) feed(ev keyEvent, active bool) guardAction {
 	// Enter: whether it is guarded, passed through, or injected by another
 	// process, a down commits or replaces whatever composition was open.
 	composingAtPress := m.composing
-	if ev.down {
+	if ev.Down {
 		m.composing = false
 	}
 	switch m.phase {
 	case guardIdle:
-		if !ev.down || !active || ev.injected {
+		if !ev.Down || !active || ev.Injected {
 			return act
 		}
-		if m.anyDown(vkLShift, vkRShift, vkLMenu, vkRMenu, vkLWin, vkRWin) {
+		if m.anyDown(win32.VkLShift, win32.VkRShift, win32.VkLMenu, win32.VkRMenu, win32.VkLWin, win32.VkRWin) {
 			return act // Shift/Alt/Win chords pass through untouched
 		}
-		act.block = true
-		act.dispatch = true
-		act.send = m.anyDown(vkLControl, vkRControl)
-		act.composing = composingAtPress
+		act.Block = true
+		act.Dispatch = true
+		act.Send = m.anyDown(win32.VkLControl, win32.VkRControl)
+		act.Composing = composingAtPress
 		m.phase = guardSwallow
 	case guardSwallow:
-		if ev.injected {
+		if ev.Injected {
 			// Another process injected an Enter while we are swallowing a
 			// physical press: leave third-party input alone.
 			return act
 		}
-		act.block = true // auto-repeat down or the matching physical up
-		if !ev.down {
+		act.Block = true // auto-repeat down or the matching physical up
+		if !ev.Down {
 			m.phase = guardIdle
 		}
 	}

@@ -1,4 +1,6 @@
-package main
+package hookstate
+
+import "github.com/ishibashi-futos/alt-ime-go/internal/win32"
 
 // Alt tap detection state machine. Pure logic with no Win32 dependency so
 // the full transition table stays unit-testable on any host. The machine is
@@ -13,34 +15,34 @@ const (
 	tapCanceled
 )
 
-// keyEvent is one keyboard transition observed by the low-level hook.
+// KeyEvent is one keyboard transition observed by the low-level hook.
 // Self-injected events (LLKHF_INJECTED with ownInputTag) must be filtered
 // out by the caller before feeding; injected events from other processes are
 // fed with injected=true because they still reach the target application and
 // therefore cancel a tap in progress.
-type keyEvent struct {
-	vk       uint32
-	down     bool
-	injected bool
-	time     uint32 // KBDLLHOOKSTRUCT.time; wraps at 2^32 ms
+type KeyEvent struct {
+	VK       uint32
+	Down     bool
+	Injected bool
+	Time     uint32 // KBDLLHOOKSTRUCT.time; wraps at 2^32 ms
 }
 
-// tapAction is what the hook layer must do after feeding one event.
-type tapAction struct {
-	// beginTap: a physical Alt press just started a clean tap candidate.
+// TapAction is what the hook layer must do after feeding one event.
+type TapAction struct {
+	// BeginTap: a physical Alt press just started a clean tap candidate.
 	// This is where the legacy menu-focus suppressor may be sent.
-	beginTap bool
-	// endTap: the tracked physical Alt was released without another key,
+	BeginTap bool
+	// EndTap: the tracked physical Alt was released without another key,
 	// including after the IME-switch hold limit. This is where the
 	// Electron/DOM-visible suppressor may be sent before the Alt-up passes.
-	endTap bool
-	// dispatch: a tap completed; request an IME switch.
-	dispatch  bool
-	imeOpen   bool   // dispatch: true = IME ON (right Alt), false = OFF (left Alt)
-	triggerVK uint32 // dispatch: the Alt that triggered, for release re-checks
+	EndTap bool
+	// Dispatch: a tap completed; request an IME switch.
+	Dispatch  bool
+	ImeOpen   bool   // Dispatch: true = IME ON (right Alt), false = OFF (left Alt)
+	TriggerVK uint32 // Dispatch: the Alt that triggered, for release re-checks
 }
 
-type tapMachine struct {
+type TapMachine struct {
 	phase     tapPhase
 	targetVK  uint32
 	downTime  uint32
@@ -51,30 +53,30 @@ type tapMachine struct {
 	heldCount int
 }
 
-func newTapMachine(maxHoldMs uint32) *tapMachine {
-	return &tapMachine{maxHoldMs: maxHoldMs}
+func NewTapMachine(maxHoldMs uint32) *TapMachine {
+	return &TapMachine{maxHoldMs: maxHoldMs}
 }
 
-// normalizeAltVK converts a generic VK_MENU event into the left/right code
+// NormalizeAltVK converts a generic VK_MENU event into the left/right code
 // expected by the tap machine. Some keyboard input paths preserve VK_MENU in
 // the event and carry the side only in the extended-key flag: right Alt is an
 // extended key, while left Alt is not. Already-specific and non-Alt VKs pass
 // through unchanged.
-func normalizeAltVK(vk uint32, extended bool) uint32 {
-	if vk != vkMenu {
+func NormalizeAltVK(vk uint32, extended bool) uint32 {
+	if vk != win32.VkMenu {
 		return vk
 	}
 	if extended {
-		return vkRMenu
+		return win32.VkRMenu
 	}
-	return vkLMenu
+	return win32.VkLMenu
 }
 
 // resync replaces the held-key view and returns the machine to idle. Callers
 // run it outside the hook callback (startup, enable/disable, session unlock,
 // power resume) with the keys the OS currently reports as down, so keys held
 // from before tracking started still cancel taps.
-func (m *tapMachine) resync(down []uint32) {
+func (m *TapMachine) Resync(down []uint32) {
 	m.held = [256]bool{}
 	m.heldCount = 0
 	for _, vk := range down {
@@ -91,13 +93,13 @@ func (m *tapMachine) resync(down []uint32) {
 // interpret (contradictory down/up encoding). The held-key view is left
 // untouched: a stale "held" entry only suppresses future taps, which is the
 // safe direction. Never produces a switch.
-func (m *tapMachine) invalidate() {
+func (m *TapMachine) Invalidate() {
 	if m.phase == tapTracking {
 		m.phase = tapCanceled
 	}
 }
 
-func (m *tapMachine) otherHeld(vk uint32) bool {
+func (m *TapMachine) otherHeld(vk uint32) bool {
 	n := m.heldCount
 	if m.held[vk] {
 		n--
@@ -106,15 +108,15 @@ func (m *tapMachine) otherHeld(vk uint32) bool {
 }
 
 // feed consumes one keyboard transition and reports the required action.
-func (m *tapMachine) feed(ev keyEvent) tapAction {
-	var act tapAction
-	if ev.vk == 0 || ev.vk >= 256 {
+func (m *TapMachine) Feed(ev KeyEvent) TapAction {
+	var act TapAction
+	if ev.VK == 0 || ev.VK >= 256 {
 		// Out-of-contract VK (KBDLLHOOKSTRUCT documents 1..254): treat as an
 		// inconsistent event.
-		m.invalidate()
+		m.Invalidate()
 		return act
 	}
-	if ev.down {
+	if ev.Down {
 		m.feedDown(ev, &act)
 	} else {
 		m.feedUp(ev, &act)
@@ -122,17 +124,17 @@ func (m *tapMachine) feed(ev keyEvent) tapAction {
 	return act
 }
 
-func (m *tapMachine) feedDown(ev keyEvent, act *tapAction) {
-	isAlt := ev.vk == vkLMenu || ev.vk == vkRMenu
-	otherHeld := m.otherHeld(ev.vk)
-	wasDown := m.held[ev.vk]
+func (m *TapMachine) feedDown(ev KeyEvent, act *TapAction) {
+	isAlt := ev.VK == win32.VkLMenu || ev.VK == win32.VkRMenu
+	otherHeld := m.otherHeld(ev.VK)
+	wasDown := m.held[ev.VK]
 	if !wasDown {
-		m.held[ev.vk] = true
+		m.held[ev.VK] = true
 		m.heldCount++
 	}
 	switch m.phase {
 	case tapIdle:
-		if !isAlt || ev.injected {
+		if !isAlt || ev.Injected {
 			// Never starts a tap. The held-key update above is enough: a
 			// later Alt press sees this key and is canceled.
 			return
@@ -142,15 +144,15 @@ func (m *tapMachine) feedDown(ev keyEvent, act *tapAction) {
 			// fresh press we never observed (e.g. held across a resync):
 			// no tap until this Alt is released.
 			m.phase = tapCanceled
-			m.targetVK = ev.vk
+			m.targetVK = ev.VK
 			return
 		}
 		m.phase = tapTracking
-		m.targetVK = ev.vk
-		m.downTime = ev.time
-		act.beginTap = true
+		m.targetVK = ev.VK
+		m.downTime = ev.Time
+		act.BeginTap = true
 	case tapTracking:
-		if ev.vk == m.targetVK && !ev.injected {
+		if ev.VK == m.targetVK && !ev.Injected {
 			return // auto-repeat of the tracked Alt
 		}
 		// Opposite Alt, any other key, or an injected duplicate of the
@@ -161,12 +163,12 @@ func (m *tapMachine) feedDown(ev keyEvent, act *tapAction) {
 	}
 }
 
-func (m *tapMachine) feedUp(ev keyEvent, act *tapAction) {
-	if m.held[ev.vk] {
-		m.held[ev.vk] = false
+func (m *TapMachine) feedUp(ev KeyEvent, act *TapAction) {
+	if m.held[ev.VK] {
+		m.held[ev.VK] = false
 		m.heldCount--
 	}
-	if ev.vk != m.targetVK {
+	if ev.VK != m.targetVK {
 		if m.phase == tapTracking {
 			// A key we did not believe to be down was released mid-tap: the
 			// held-key view is stale, so fail toward not switching.
@@ -176,17 +178,17 @@ func (m *tapMachine) feedUp(ev keyEvent, act *tapAction) {
 	}
 	switch m.phase {
 	case tapTracking:
-		if ev.injected {
+		if ev.Injected {
 			// The tracked Alt was "released" by an injected event while the
 			// physical key state is unknown: fail safe, wait for the real up.
 			m.phase = tapCanceled
 			return
 		}
-		act.endTap = true
-		if ev.time-m.downTime <= m.maxHoldMs { // uint32 wraparound-safe
-			act.dispatch = true
-			act.imeOpen = ev.vk == vkRMenu
-			act.triggerVK = ev.vk
+		act.EndTap = true
+		if ev.Time-m.downTime <= m.maxHoldMs { // uint32 wraparound-safe
+			act.Dispatch = true
+			act.ImeOpen = ev.VK == win32.VkRMenu
+			act.TriggerVK = ev.VK
 		}
 		m.phase = tapIdle
 		m.targetVK = 0

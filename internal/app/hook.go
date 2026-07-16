@@ -1,6 +1,6 @@
 //go:build windows
 
-package main
+package app
 
 // The WH_KEYBOARD_LL hook and its dedicated OS thread. The callback performs
 // only fixed-cost work: state-machine updates, the optional two-stage menu
@@ -18,12 +18,16 @@ import (
 	"sync/atomic"
 	"syscall"
 	"unsafe"
+
+	"github.com/ishibashi-futos/alt-ime-go/internal/config"
+	"github.com/ishibashi-futos/alt-ime-go/internal/hookstate"
+	"github.com/ishibashi-futos/alt-ime-go/internal/win32"
 )
 
 type hookThread struct {
 	ctrl    uintptr // controller window owned by the UI thread
-	machine *tapMachine
-	guard   *guardMachine
+	machine *hookstate.TapMachine
+	guard   *hookstate.GuardMachine
 	// tid is published to the UI thread through the startup channel receive
 	// (happens-before), then only read.
 	tid uint32
@@ -50,7 +54,7 @@ type hookThread struct {
 	suppressCleanup   atomic.Uint32 // best-effort key-up cleanup was not inserted
 	postFailed        atomic.Uint32 // PostThreadMessage from the callback failed
 	guardSyncResolve  atomic.Uint32 // guard resolved the foreground exe inside the callback
-	maxLatency        atomic.Uint64 // QPC ticks; only when measureHookLatency
+	maxLatency        atomic.Uint64 // QPC ticks; only when config.MeasureHookLatency
 }
 
 // hook is the process-wide singleton the raw callback needs to reach.
@@ -63,10 +67,10 @@ var winEventProcCB = syscall.NewCallback(winEventProc)
 func newHookThread(ctrl uintptr) *hookThread {
 	return &hookThread{
 		ctrl:         ctrl,
-		machine:      newTapMachine(tapMaxHoldMs),
-		guard:        newGuardMachine(),
+		machine:      hookstate.NewTapMachine(config.TapMaxHoldMs),
+		guard:        hookstate.NewGuardMachine(),
 		enabled:      true,
-		guardEnabled: enterGuardDefaultEnabled,
+		guardEnabled: config.EnterGuardDefaultEnabled,
 	}
 }
 
@@ -77,71 +81,71 @@ func newHookThread(ctrl uintptr) *hookThread {
 // are the Enter presses the guard machine replaces.
 func hookProc(nCode, wParam uintptr, lParam unsafe.Pointer) uintptr {
 	h := hook
-	if h != nil && int32(uint32(nCode)) == hcAction && h.enabled {
+	if h != nil && int32(uint32(nCode)) == win32.HcAction && h.enabled {
 		var block bool
-		if measureHookLatency {
-			start := queryPerformanceCounter()
-			block = h.handleKey(wParam, (*kbdllHookStruct)(lParam))
-			if d := queryPerformanceCounter() - start; d > h.maxLatency.Load() {
+		if config.MeasureHookLatency {
+			start := win32.QueryPerformanceCounter()
+			block = h.handleKey(wParam, (*win32.KbdllHookStruct)(lParam))
+			if d := win32.QueryPerformanceCounter() - start; d > h.maxLatency.Load() {
 				h.maxLatency.Store(d)
 			}
 		} else {
-			block = h.handleKey(wParam, (*kbdllHookStruct)(lParam))
+			block = h.handleKey(wParam, (*win32.KbdllHookStruct)(lParam))
 		}
 		if block {
 			return 1
 		}
 	}
-	return callNextHookEx(nCode, wParam, uintptr(lParam))
+	return win32.CallNextHookEx(nCode, wParam, uintptr(lParam))
 }
 
-func (h *hookThread) handleKey(wParam uintptr, k *kbdllHookStruct) (block bool) {
+func (h *hookThread) handleKey(wParam uintptr, k *win32.KbdllHookStruct) (block bool) {
 	var down bool
 	switch wParam {
-	case wmKeyDown, wmSysKeyDown:
+	case win32.WmKeyDown, win32.WmSysKeyDown:
 		down = true
-	case wmKeyUp, wmSysKeyUp:
+	case win32.WmKeyUp, win32.WmSysKeyUp:
 		down = false
 	default:
 		return false
 	}
-	if down == (k.flags&llkhfUp != 0) {
+	if down == (k.Flags&win32.LlkhfUp != 0) {
 		// Message kind contradicts LLKHF_UP: cancel any tap in progress.
-		h.machine.invalidate()
+		h.machine.Invalidate()
 		return false
 	}
-	injected := k.flags&llkhfInjected != 0
-	if injected && k.dwExtraInfo == ownInputTag {
+	injected := k.Flags&win32.LlkhfInjected != 0
+	if injected && k.DwExtraInfo == win32.OwnInputTag {
 		return false // self-injected (IME keys, suppressors, guard): invisible to the machines
 	}
-	extended := k.flags&llkhfExtended != 0
-	vk := normalizeAltVK(k.vkCode, extended)
-	act := h.machine.feed(keyEvent{vk: vk, down: down, injected: injected, time: k.time})
-	if act.beginTap && suppressAltMenuFocus {
+	extended := k.Flags&win32.LlkhfExtended != 0
+	vk := hookstate.NormalizeAltVK(k.VkCode, extended)
+	act := h.machine.Feed(hookstate.KeyEvent{VK: vk, Down: down, Injected: injected, Time: k.Time})
+	if act.BeginTap && config.SuppressAltMenuFocus {
 		// Preserve the original alt-ime-ahk mask on Alt-down for Win32-style
 		// menus. It is deliberately paired with the assigned-key suppressor
 		// below because unassigned VK 0x07 may not reach modern app layers.
-		h.sendSuppressor(vkMenuSuppressLegacy, &h.suppressDownShort)
+		h.sendSuppressor(win32.VkMenuSuppressLegacy, &h.suppressDownShort)
 	}
-	if act.endTap && suppressAltMenuFocus {
+	if act.EndTap && config.SuppressAltMenuFocus {
 		// The callback runs before the physical Alt-up is posted. Insert an
 		// assigned F24 pair now so Electron/Chromium and DOM keyboard handlers
 		// observe a chord rather than a lone Alt release. Canceled chords have
 		// their real second key and never take this path.
-		h.sendSuppressor(vkMenuSuppressDOM, &h.suppressUpShort)
+		h.sendSuppressor(win32.VkMenuSuppressDOM, &h.suppressUpShort)
 	}
-	if act.dispatch {
+	if act.Dispatch {
 		// Stage one of the two-stage dispatch: capture the tap-time
 		// foreground window and post to this thread's own queue, so the
 		// switch request is forwarded to the UI only after this callback
 		// has returned.
-		if target := getForegroundWindow(); target != 0 {
-			if !postThreadMessage(h.tid, msgHookDispatchSwitch, packSwitchWParam(act.imeOpen, act.triggerVK), target) {
+		if target := win32.GetForegroundWindow(); target != 0 {
+			if !win32.PostThreadMessage(h.tid, msgHookDispatchSwitch, hookstate.PackSwitchWParam(act.ImeOpen, act.TriggerVK), target) {
 				h.postFailed.Add(1)
 			}
 		}
 	}
-	return h.feedGuard(keyEvent{vk: normalizeModVK(vk, extended), down: down, injected: injected, time: k.time})
+	return h.feedGuard(hookstate.KeyEvent{VK: hookstate.NormalizeModVK(vk, extended), Down: down, Injected: injected, Time: k.Time})
 }
 
 // feedGuard runs the Enter-guard machine over the same event stream as the
@@ -151,24 +155,24 @@ func (h *hookThread) handleKey(wParam uintptr, k *kbdllHookStruct) (block bool) 
 // open status — a bounded external call this callback must never make.
 // Only a physical Enter down needs the foreground evaluation; every other
 // event just updates the guard's modifier and composition tracking.
-func (h *hookThread) feedGuard(ev keyEvent) bool {
+func (h *hookThread) feedGuard(ev hookstate.KeyEvent) bool {
 	active := false
-	if ev.vk == vkReturn && ev.down && !ev.injected && h.guardEnabled {
+	if ev.VK == win32.VkReturn && ev.Down && !ev.Injected && h.guardEnabled {
 		active = h.guardForeground()
 	}
-	act := h.guard.feed(ev, active)
-	if act.dispatch {
+	act := h.guard.Feed(ev, active)
+	if act.Dispatch {
 		// Stage one, mirroring the IME-switch dispatch: post to this
 		// thread's own queue so the request reaches the UI only after this
 		// callback has returned. h.fg.hwnd is the foreground window the
 		// active decision was just made against.
 		if target := h.fg.hwnd; target != 0 {
-			if !postThreadMessage(h.tid, msgHookDispatchGuard, packGuardWParam(act.send, act.composing), target) {
+			if !win32.PostThreadMessage(h.tid, msgHookDispatchGuard, hookstate.PackGuardWParam(act.Send, act.Composing), target) {
 				h.postFailed.Add(1)
 			}
 		}
 	}
-	return act.block
+	return act.Block
 }
 
 // guardForeground reports whether the foreground window is a guard target.
@@ -177,7 +181,7 @@ func (h *hookThread) feedGuard(ev keyEvent) bool {
 // back to resolving the exe synchronously — three bounded syscalls, counted
 // so the frequency of this deviation from the fixed-cost rule is observable.
 func (h *hookThread) guardForeground() bool {
-	fg := getForegroundWindow()
+	fg := win32.GetForegroundWindow()
 	if fg != h.fg.hwnd {
 		h.guardSyncResolve.Add(1)
 		h.refreshForeground(fg)
@@ -188,14 +192,14 @@ func (h *hookThread) guardForeground() bool {
 func (h *hookThread) refreshForeground(hwnd uintptr) {
 	isTarget := false
 	if hwnd != 0 {
-		if path, ok := processImagePath(windowProcessId(hwnd)); ok {
-			isTarget = matchGuardTarget(path)
+		if path, ok := win32.ProcessImagePath(win32.WindowProcessId(hwnd)); ok {
+			isTarget = config.MatchGuardTarget(path)
 		}
 	}
 	h.fg.hwnd = hwnd
 	h.fg.isTarget = isTarget
 	// Losing or changing focus commits or cancels any open composition.
-	h.guard.clearComposing()
+	h.guard.ClearComposing()
 }
 
 // winEventProc receives EVENT_SYSTEM_FOREGROUND. WINEVENT_OUTOFCONTEXT
@@ -203,7 +207,7 @@ func (h *hookThread) refreshForeground(hwnd uintptr) {
 // keyboard callback — so the process query in refreshForeground stays out
 // of the fixed-cost path and the cache needs no synchronization.
 func winEventProc(hWinEventHook, event, hwnd, idObject, idChild, idEventThread, dwmsEventTime uintptr) uintptr {
-	if h := hook; h != nil && uint32(event) == eventSystemForeground {
+	if h := hook; h != nil && uint32(event) == win32.EventSystemForeground {
 		h.refreshForeground(hwnd)
 	}
 	return 0
@@ -214,9 +218,9 @@ func winEventProc(hWinEventHook, event, hwnd, idObject, idChild, idEventThread, 
 // standalone key-up cleanup before returning. The caller still passes the
 // physical Alt event regardless of every SendInput result.
 func (h *hookThread) sendSuppressor(vk uint16, short *atomic.Uint32) {
-	if n, _ := sendKeyPair(vk); n != 2 {
+	if n, _ := win32.SendKeyPair(vk); n != 2 {
 		short.Add(1)
-		if cleanup, _ := sendKeyUp(vk); cleanup != 1 {
+		if cleanup, _ := win32.SendKeyUp(vk); cleanup != 1 {
 			h.suppressCleanup.Add(1)
 		}
 	}
@@ -227,12 +231,12 @@ func (h *hookThread) sendSuppressor(vk uint16, short *atomic.Uint32) {
 // succeeded.
 func (h *hookThread) run(ready chan<- error) {
 	runtime.LockOSThread()
-	var msg msgStruct
+	var msg win32.MsgStruct
 	// Force the thread message queue into existence before publishing tid.
-	peekMessage(&msg, pmNoRemove)
-	h.tid = getCurrentThreadId()
+	win32.PeekMessage(&msg, win32.PmNoRemove)
+	h.tid = win32.GetCurrentThreadId()
 	h.resyncMachines()
-	hhook, err := setWindowsHookEx(whKeyboardLL, hookProcCB, getModuleHandle(), 0)
+	hhook, err := win32.SetWindowsHookEx(win32.WhKeyboardLL, hookProcCB, win32.GetModuleHandle(), 0)
 	if err != nil {
 		ready <- err
 		return
@@ -240,30 +244,30 @@ func (h *hookThread) run(ready chan<- error) {
 	h.hhook = hhook
 	// Foreground tracking for the Enter guard. On failure the guard still
 	// works through the synchronous per-Enter fallback in guardForeground.
-	if h.winEvent = setWinEventHook(eventSystemForeground, winEventProcCB); h.winEvent == 0 {
-		debugf("SetWinEventHook(foreground) failed; Enter guard falls back to per-Enter resolution")
+	if h.winEvent = win32.SetWinEventHook(win32.EventSystemForeground, winEventProcCB); h.winEvent == 0 {
+		win32.Debugf("SetWinEventHook(foreground) failed; Enter guard falls back to per-Enter resolution")
 	}
 	ready <- nil
 
 	for {
-		switch r := getMessage(&msg); r {
+		switch r := win32.GetMessage(&msg); r {
 		case 0, -1:
 			// Nothing posts WM_QUIT here and -1 is not expected for a pure
 			// thread-message loop: treat the loop as broken, remove the hook
 			// and tell the UI it died.
 			h.unhook()
-			debugf("hook thread: GetMessage returned %d; stopping", r)
-			postMessage(h.ctrl, msgHookStopped, 1, 0)
+			win32.Debugf("hook thread: GetMessage returned %d; stopping", r)
+			win32.PostMessage(h.ctrl, msgHookStopped, 1, 0)
 			return
 		}
-		switch msg.message {
+		switch msg.Message {
 		case msgHookDispatchSwitch:
 			// Stage two: the callback has long returned; hand the request to
 			// the UI thread. The UI re-validates the target window and the
 			// Alt release before touching the IME.
 			if h.enabled {
-				if !postMessage(h.ctrl, msgSwitch, msg.wParam, msg.lParam) {
-					debugf("hook: PostMessage(msgSwitch) failed")
+				if !win32.PostMessage(h.ctrl, msgSwitch, msg.WParam, msg.LParam) {
+					win32.Debugf("hook: PostMessage(msgSwitch) failed")
 				}
 			}
 		case msgHookDispatchGuard:
@@ -271,15 +275,15 @@ func (h *hookThread) run(ready chan<- error) {
 			// consumed; the UI re-validates the target and injects the
 			// replacement.
 			if h.enabled && h.guardEnabled {
-				if !postMessage(h.ctrl, msgGuardEnter, msg.wParam, msg.lParam) {
-					debugf("hook: PostMessage(msgGuardEnter) failed")
+				if !win32.PostMessage(h.ctrl, msgGuardEnter, msg.WParam, msg.LParam) {
+					win32.Debugf("hook: PostMessage(msgGuardEnter) failed")
 				}
 			}
 		case msgHookSetEnabled:
-			h.enabled = msg.wParam != 0
+			h.enabled = msg.WParam != 0
 			h.resyncMachines()
 		case msgHookSetEnterGuard:
-			h.guardEnabled = msg.wParam != 0
+			h.guardEnabled = msg.WParam != 0
 			h.resyncMachines()
 		case msgHookReset:
 			// Session unlock / power resume: the OS may have swallowed
@@ -289,8 +293,8 @@ func (h *hookThread) run(ready chan<- error) {
 			h.unhook()
 			h.drainDiagnostics()
 			h.reportLatency()
-			if !postMessage(h.ctrl, msgHookStopped, 0, 0) {
-				debugf("hook: PostMessage(msgHookStopped) failed")
+			if !win32.PostMessage(h.ctrl, msgHookStopped, 0, 0) {
+				win32.Debugf("hook: PostMessage(msgHookStopped) failed")
 			}
 			return
 		}
@@ -304,21 +308,21 @@ func (h *hookThread) run(ready chan<- error) {
 // while it is at it.
 func (h *hookThread) resyncMachines() {
 	held := scanHeldKeys()
-	h.machine.resync(held)
-	h.guard.resync(held)
-	h.refreshForeground(getForegroundWindow())
+	h.machine.Resync(held)
+	h.guard.Resync(held)
+	h.refreshForeground(win32.GetForegroundWindow())
 }
 
 func (h *hookThread) unhook() {
 	if h.winEvent != 0 {
-		if !unhookWinEvent(h.winEvent) {
-			debugf("UnhookWinEvent failed")
+		if !win32.UnhookWinEvent(h.winEvent) {
+			win32.Debugf("UnhookWinEvent failed")
 		}
 		h.winEvent = 0
 	}
 	if h.hhook != 0 {
-		if !unhookWindowsHookEx(h.hhook) {
-			debugf("UnhookWindowsHookEx failed")
+		if !win32.UnhookWindowsHookEx(h.hhook) {
+			win32.Debugf("UnhookWindowsHookEx failed")
 		}
 		h.hhook = 0
 	}
@@ -326,28 +330,28 @@ func (h *hookThread) unhook() {
 
 func (h *hookThread) drainDiagnostics() {
 	if n := h.suppressDownShort.Swap(0); n != 0 {
-		debugf("Alt-down menu suppressor SendInput inserted <2 events (%d times)", n)
+		win32.Debugf("Alt-down menu suppressor SendInput inserted <2 events (%d times)", n)
 	}
 	if n := h.suppressUpShort.Swap(0); n != 0 {
-		debugf("Alt-up DOM suppressor SendInput inserted <2 events (%d times)", n)
+		win32.Debugf("Alt-up DOM suppressor SendInput inserted <2 events (%d times)", n)
 	}
 	if n := h.suppressCleanup.Swap(0); n != 0 {
-		debugf("menu suppressor key-up cleanup SendInput failed (%d times)", n)
+		win32.Debugf("menu suppressor key-up cleanup SendInput failed (%d times)", n)
 	}
 	if n := h.postFailed.Swap(0); n != 0 {
-		debugf("PostThreadMessage(dispatch) failed inside callback (%d times)", n)
+		win32.Debugf("PostThreadMessage(dispatch) failed inside callback (%d times)", n)
 	}
 	if n := h.guardSyncResolve.Swap(0); n != 0 {
-		debugf("Enter guard resolved the foreground exe inside the callback (%d times)", n)
+		win32.Debugf("Enter guard resolved the foreground exe inside the callback (%d times)", n)
 	}
 }
 
 func (h *hookThread) reportLatency() {
-	if !measureHookLatency {
+	if !config.MeasureHookLatency {
 		return
 	}
-	if freq := queryPerformanceFrequency(); freq != 0 {
-		debugf("hook callback max latency: %dus", h.maxLatency.Load()*1_000_000/freq)
+	if freq := win32.QueryPerformanceFrequency(); freq != 0 {
+		win32.Debugf("hook callback max latency: %dus", h.maxLatency.Load()*1_000_000/freq)
 	}
 }
 
@@ -361,10 +365,10 @@ func scanHeldKeys() []uint32 {
 	var down []uint32
 	for vk := uint32(0x08); vk <= 0xFE; vk++ {
 		switch vk {
-		case vkShift, vkControl, vkMenu:
+		case win32.VkShift, win32.VkControl, win32.VkMenu:
 			continue
 		}
-		if getAsyncKeyStateDown(vk) {
+		if win32.GetAsyncKeyStateDown(vk) {
 			down = append(down, vk)
 		}
 	}
